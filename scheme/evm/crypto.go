@@ -7,6 +7,7 @@ import (
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	decred_ecdsa "github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // SignatureLength indicates the byte length required to carry a signature with recovery id.
@@ -69,6 +70,11 @@ func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
 	copy(sig, sig[1:])
 	sig[RecoveryIDOffset] = v
 	return sig, nil
+}
+
+// PubkeyToAddress derives an Ethereum address from an uncompressed public key.
+func PubkeyToAddress(pubkey []byte) common.Address {
+	return common.BytesToAddress(Keccak256(pubkey[1:])[12:])
 }
 
 // VerifySignature checks that the given public key created signature over hash.
