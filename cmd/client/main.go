@@ -26,6 +26,7 @@ var (
 	to      string
 	amount  string
 	privkey string
+	method  string
 )
 
 func init() {
@@ -39,6 +40,7 @@ func init() {
 	fs.StringVarP(&to, "to", "T", "", "Recipient address")
 	fs.StringVarP(&amount, "amount", "A", "", "Amount to send")
 	fs.StringVarP(&privkey, "privkey", "P", "", "Sender private key")
+	fs.StringVarP(&method, "method", "m", "eip3009", "Payment method (eip3009 or permit2)")
 }
 
 func main() {
@@ -64,14 +66,30 @@ func run(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to decode private key")
 		}
-		evmPayload, err := evm.NewEVMPayload(network, token, from, to, amount, evm.NewRawPrivateSigner(priv))
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to create EVM payload")
+		signer := evm.NewRawPrivateSigner(priv)
+
+		var jsonPayload []byte
+		switch method {
+		case "permit2":
+			permit2Payload, err := evm.NewPermit2Payload(network, token, from, to, amount, signer)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to create Permit2 payload")
+			}
+			jsonPayload, err = json.Marshal(permit2Payload)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to marshal Permit2 payload to JSON")
+			}
+		default: // "eip3009"
+			evmPayload, err := evm.NewEVMPayload(network, token, from, to, amount, signer)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to create EVM payload")
+			}
+			jsonPayload, err = json.Marshal(evmPayload)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to marshal EVM payload to JSON")
+			}
 		}
-		jsonPayload, err := json.Marshal(evmPayload)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to marshal EVM payload to JSON")
-		}
+
 		paymentPayload = &types.PaymentPayload{
 			X402Version: int(types.X402VersionV1),
 			Scheme:      scheme,
