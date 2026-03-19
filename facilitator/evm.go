@@ -379,7 +379,14 @@ func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.Payme
 
 	// Step 8: Amount must exactly match requirement
 	reqAmount, ok := new(big.Int).SetString(req.MaxAmountRequired, 10)
-	if ok && auth.Permitted.Amount.Cmp(reqAmount) != 0 {
+	if !ok {
+		return &types.PaymentVerifyResponse{
+			IsValid:       false,
+			InvalidReason: types.ErrPermit2AmountMismatch.Error(),
+			Payer:         auth.From.String(),
+		}, nil
+	}
+	if auth.Permitted.Amount.Cmp(reqAmount) != 0 {
 		return &types.PaymentVerifyResponse{
 			IsValid:       false,
 			InvalidReason: types.ErrPermit2AmountMismatch.Error(),
