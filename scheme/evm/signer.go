@@ -59,3 +59,27 @@ func HashEip3009(auth *Authorization, domain *DomainConfig) []byte {
 		append(prefix, append(domainSeparator, messageHash...)...),
 	)
 }
+
+func SignPermit2(auth *Permit2Authorization, chainID *big.Int, signer types.Signer) (string, error) {
+	sig, err := signer(HashPermit2(auth, chainID))
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sig), nil
+}
+
+func HashPermit2(auth *Permit2Authorization, chainID *big.Int) []byte {
+	domain := Permit2DomainConfig{
+		Name:              "Permit2",
+		ChainID:           chainID,
+		VerifyingContract: Permit2Address,
+	}
+	domainSeparator := domain.ToMessageHash()
+	messageHash := auth.ToMessageHash()
+
+	// Final EIP-712 hash
+	var prefix = []byte{0x19, 0x01}
+	return Keccak256(
+		append(prefix, append(domainSeparator, messageHash...)...),
+	)
+}

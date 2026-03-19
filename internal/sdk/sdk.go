@@ -50,6 +50,15 @@ type (
 	// ExactPermit2Payload represents the Permit2 payment payload
 	ExactPermit2Payload = evm.ExactPermit2Payload
 
+	// Permit2Authorization represents the Permit2 authorization parameters
+	Permit2Authorization = evm.Permit2Authorization
+
+	// Permit2TokenPermissions represents token permissions for Permit2
+	Permit2TokenPermissions = evm.Permit2TokenPermissions
+
+	// Permit2Witness represents witness data for Permit2
+	Permit2Witness = evm.Permit2Witness
+
 	// FacilitatorEvmSigner is the interface that must be implemented
 	// to connect the SDK to actual EVM RPC endpoints
 	FacilitatorEvmSigner = evm.FacilitatorEvmSigner

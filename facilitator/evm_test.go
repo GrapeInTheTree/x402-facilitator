@@ -81,3 +81,23 @@ func TestEVMSettle(t *testing.T) {
 	require.NoError(t, err)
 	fmt.Println(string(jsonRes))
 }
+
+func TestPayloadDetection(t *testing.T) {
+	t.Run("detects EIP3009 payload", func(t *testing.T) {
+		eip3009Json := []byte(`{"signature":"0xabc","authorization":{"from":"0x1234"}}`)
+		require.False(t, evm.IsPermit2PayloadJSON(eip3009Json))
+	})
+
+	t.Run("detects Permit2 payload", func(t *testing.T) {
+		permit2Json := []byte(`{"signature":"0xabc","permit2Authorization":{"from":"0x1234"}}`)
+		require.True(t, evm.IsPermit2PayloadJSON(permit2Json))
+	})
+
+	t.Run("returns false for invalid JSON", func(t *testing.T) {
+		require.False(t, evm.IsPermit2PayloadJSON([]byte(`{invalid`)))
+	})
+
+	t.Run("returns false for empty payload", func(t *testing.T) {
+		require.False(t, evm.IsPermit2PayloadJSON([]byte(`{}`)))
+	})
+}

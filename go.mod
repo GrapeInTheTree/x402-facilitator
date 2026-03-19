@@ -4,7 +4,7 @@ go 1.24.2
 
 require (
 	github.com/blocto/solana-go-sdk v1.30.0
-	github.com/coinbase/x402/go v0.0.0-20260131002651-d9c7ed559bbe
+	github.com/coinbase/x402/go v0.0.0-20260318010130-6a90fe93c57f
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/ethereum/go-ethereum v1.16.8
 	github.com/knadh/koanf/parsers/toml v0.1.0
