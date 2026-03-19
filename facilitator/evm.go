@@ -168,12 +168,19 @@ func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.Payme
 	if err != nil {
 		return nil, err
 	}
-	digest := evmPayload.Authorization.ToMessageHash()
+	digest := evm.HashEip3009(evmPayload.Authorization, domainConfig)
 	pubkey, err := evm.Ecrecover(digest, sig)
 	if err != nil {
 		return nil, err
 	}
 	if valid := evm.VerifySignature(pubkey, digest, sig[:64]); !valid {
+		return &types.PaymentVerifyResponse{
+			IsValid:       false,
+			InvalidReason: types.ErrInvalidSignature.Error(),
+			Payer:         evmPayload.Authorization.From.String(),
+		}, nil
+	}
+	if evm.PubkeyToAddress(pubkey) != evmPayload.Authorization.From {
 		return &types.PaymentVerifyResponse{
 			IsValid:       false,
 			InvalidReason: types.ErrInvalidSignature.Error(),
@@ -422,6 +429,13 @@ func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.Payme
 		return nil, err
 	}
 	if valid := evm.VerifySignature(pubkey, digest, sig[:64]); !valid {
+		return &types.PaymentVerifyResponse{
+			IsValid:       false,
+			InvalidReason: types.ErrPermit2InvalidSignature.Error(),
+			Payer:         auth.From.String(),
+		}, nil
+	}
+	if evm.PubkeyToAddress(pubkey) != auth.From {
 		return &types.PaymentVerifyResponse{
 			IsValid:       false,
 			InvalidReason: types.ErrPermit2InvalidSignature.Error(),
