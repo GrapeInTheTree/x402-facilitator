@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -178,6 +179,152 @@ func ParseAddress(hexStr string) (common.Address, error) {
 	}
 	copy(a[:], b)
 	return a, nil
+}
+
+// Permit2TokenPermissions represents the permitted token and amount for Permit2.
+type Permit2TokenPermissions struct {
+	Token  common.Address `json:"token"`
+	Amount *big.Int       `json:"amount"`
+}
+
+// Permit2Witness represents witness data for x402ExactPermit2Proxy.
+type Permit2Witness struct {
+	To         common.Address `json:"to"`
+	ValidAfter *big.Int       `json:"validAfter"`
+}
+
+// Permit2Authorization represents the PermitWitnessTransferFrom parameters.
+type Permit2Authorization struct {
+	From      common.Address          `json:"from"`
+	Permitted Permit2TokenPermissions `json:"permitted"`
+	Spender   common.Address          `json:"spender"`
+	Nonce     *big.Int                `json:"nonce"`
+	Deadline  *big.Int                `json:"deadline"`
+	Witness   Permit2Witness          `json:"witness"`
+}
+
+// Permit2Payload represents a Permit2 payment payload.
+type Permit2Payload struct {
+	Signature            string                `json:"signature"`
+	Permit2Authorization *Permit2Authorization `json:"permit2Authorization"`
+}
+
+var (
+	// Permit2 EIP-712 type hashes
+	Permit2WitnessTypeHash                   = Keccak256([]byte("Witness(address to,uint256 validAfter)"))
+	Permit2TokenPermissionsTypeHash          = Keccak256([]byte("TokenPermissions(address token,uint256 amount)"))
+	Permit2PermitWitnessTransferFromTypeHash = Keccak256([]byte("PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,Witness witness)TokenPermissions(address token,uint256 amount)Witness(address to,uint256 validAfter)"))
+
+	// Permit2 EIP-712 domain separator (no version field)
+	Permit2DomainTypeHash = Keccak256([]byte("EIP712Domain(string name,uint256 chainId,address verifyingContract)"))
+)
+
+func (a Permit2Authorization) ToMessageHash() []byte {
+	permittedHash := Keccak256(bytes.Join([][]byte{
+		Permit2TokenPermissionsTypeHash,
+		padAddress(a.Permitted.Token),
+		padBigInt(a.Permitted.Amount),
+	}, nil))
+	witnessHash := Keccak256(bytes.Join([][]byte{
+		Permit2WitnessTypeHash,
+		padAddress(a.Witness.To),
+		padBigInt(a.Witness.ValidAfter),
+	}, nil))
+	encoded := bytes.Join([][]byte{
+		Permit2PermitWitnessTransferFromTypeHash,
+		permittedHash,
+		padAddress(a.Spender),
+		padBigInt(a.Nonce),
+		padBigInt(a.Deadline),
+		witnessHash,
+	}, nil)
+	return Keccak256(encoded)
+}
+
+// Permit2DomainConfig represents the domain configuration for Permit2
+// EIP-712 typed data messages (no version field)
+type Permit2DomainConfig struct {
+	Name              string
+	ChainID           *big.Int
+	VerifyingContract common.Address
+}
+
+func (d Permit2DomainConfig) ToMessageHash() []byte {
+	nameHash := Keccak256([]byte(d.Name))
+	chainID := padBigInt(d.ChainID)
+	contract := padAddress(d.VerifyingContract)
+
+	return Keccak256(
+		Permit2DomainTypeHash,
+		nameHash,
+		chainID,
+		contract,
+	)
+}
+
+func NewPermit2Payload(chain, token, from, to string, value string, signer types.Signer) (*Permit2Payload, error) {
+	valueBig, ok := big.NewInt(0).SetString(value, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid value: %s", value)
+	}
+
+	tokenAddr := GetTokenAddress(chain, token)
+	if tokenAddr == (common.Address{}) {
+		return nil, fmt.Errorf("token address not found for chain %s and token %s", chain, token)
+	}
+
+	chainID := GetChainID(chain)
+	if chainID == nil {
+		return nil, fmt.Errorf("unsupported chain: %s", chain)
+	}
+
+	now := time.Now().Unix()
+	nonce := GeneratePermit2Nonce()
+
+	auth := &Permit2Authorization{
+		From: common.HexToAddress(from),
+		Permitted: Permit2TokenPermissions{
+			Token:  tokenAddr,
+			Amount: valueBig,
+		},
+		Spender:  X402ExactPermit2ProxyAddress,
+		Nonce:    nonce,
+		Deadline: big.NewInt(now + 3600), // 1 hour
+		Witness: Permit2Witness{
+			To:         common.HexToAddress(to),
+			ValidAfter: big.NewInt(0),
+		},
+	}
+
+	signature, err := SignPermit2(auth, chainID, signer)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Permit2Payload{
+		Signature:            signature,
+		Permit2Authorization: auth,
+	}, nil
+}
+
+// GeneratePermit2Nonce generates a random uint256 nonce for Permit2.
+func GeneratePermit2Nonce() *big.Int {
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	return new(big.Int).SetBytes(nonce)
+}
+
+// IsPermit2PayloadJSON checks if a JSON payload contains permit2Authorization.
+func IsPermit2PayloadJSON(data json.RawMessage) bool {
+	var probe struct {
+		Permit2Authorization json.RawMessage `json:"permit2Authorization"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	// Reject null, empty, or missing permit2Authorization
+	return len(probe.Permit2Authorization) > 0 &&
+		string(probe.Permit2Authorization) != "null"
 }
 
 func ParseSignature(sigHex string) ([]byte, error) {
