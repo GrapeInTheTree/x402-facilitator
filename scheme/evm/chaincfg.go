@@ -2,9 +2,30 @@ package evm
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+var (
+	// Permit2 canonical contract address (same on all EVM chains via CREATE2)
+	Permit2Address = common.HexToAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3")
+
+	// x402 exact payment proxy for Permit2
+	X402ExactPermit2ProxyAddress = common.HexToAddress("0x402085c248EeA27D92E8b30b2C58ed07f9E20001")
+)
+
+const Permit2DeadlineBuffer int64 = 6
+
+func GetTokenAddress(chain, asset string) common.Address {
+	if strings.HasPrefix(asset, "0x") && len(asset) == 42 {
+		return common.HexToAddress(asset)
+	}
+	if domainConfig := GetDomainConfig(chain, asset); domainConfig != nil {
+		return domainConfig.VerifyingContract
+	}
+	return common.Address{}
+}
 
 func GetChainName(chainID *big.Int) string {
 	if chainID == nil {
