@@ -18,3 +18,7 @@ generate-abi:
 	abigen --abi $(ROOT_DIR)/scheme/evm/eip3009/eip3009.abi \
 		--pkg eip3009 \
 		--out $(ROOT_DIR)/scheme/evm/eip3009/eip3009.go
+	abigen --abi $(ROOT_DIR)/scheme/evm/permit2/permit2.abi \
+		--pkg permit2 \
+		--type Permit2 \
+		--out $(ROOT_DIR)/scheme/evm/permit2/permit2.go
