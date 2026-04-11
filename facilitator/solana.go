@@ -31,7 +31,7 @@ func NewSolanaFacilitator(network string, url string, privateKeyHex string) (*So
 	}
 
 	return &SolanaFacilitator{
-		scheme:   types.Solana,
+		scheme:   types.Exact,
 		client:   client,
 		feePayer: feePayer,
 	}, nil
@@ -48,8 +48,17 @@ func (t *SolanaFacilitator) Settle(ctx context.Context, payload *types.PaymentPa
 func (t *SolanaFacilitator) Supported() []*types.SupportedKind {
 	return []*types.SupportedKind{
 		{
-			Scheme:  string(types.Solana),
-			Network: string(types.Solana),
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(types.Exact),
+			Network:     "solana:*",
 		},
 	}
+}
+
+// CaipFamily returns the CAIP-2 family pattern for Solana clusters.
+func (t *SolanaFacilitator) CaipFamily() string { return "solana:*" }
+
+// GetSigners returns the facilitator's fee-payer public key (base58).
+func (t *SolanaFacilitator) GetSigners() []string {
+	return []string{t.feePayer.PublicKey.String()}
 }

@@ -24,8 +24,15 @@ func (t *TronFacilitator) Settle(ctx context.Context, payload *types.PaymentPayl
 func (t *TronFacilitator) Supported() []*types.SupportedKind {
 	return []*types.SupportedKind{
 		{
-			Scheme:  string(types.Tron),
-			Network: string(types.Tron),
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(types.Exact),
+			Network:     "tron:*",
 		},
 	}
 }
+
+// CaipFamily returns the CAIP-2 family pattern for Tron networks.
+func (t *TronFacilitator) CaipFamily() string { return "tron:*" }
+
+// GetSigners returns no addresses — the Tron facilitator is a stub.
+func (t *TronFacilitator) GetSigners() []string { return nil }

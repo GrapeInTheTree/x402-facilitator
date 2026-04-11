@@ -66,7 +66,7 @@ func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFa
 	}
 
 	return &EVMFacilitator{
-		scheme:    types.EVM,
+		scheme:    types.Exact,
 		network:   network,
 		networkID: networkId,
 
@@ -95,10 +95,19 @@ func (t *EVMFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 func (t *EVMFacilitator) Supported() []*types.SupportedKind {
 	return []*types.SupportedKind{
 		{
-			Scheme:  string(t.scheme),
-			Network: t.network,
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(t.scheme),
+			Network:     t.network,
 		},
 	}
+}
+
+// CaipFamily returns the CAIP-2 family pattern for EVM chains.
+func (t *EVMFacilitator) CaipFamily() string { return "eip155:*" }
+
+// GetSigners returns the facilitator's fee-paying EOA address.
+func (t *EVMFacilitator) GetSigners() []string {
+	return []string{t.address.Hex()}
 }
 
 // verification steps:

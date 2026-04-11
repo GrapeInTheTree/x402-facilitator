@@ -24,8 +24,15 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 func (t *SuiFacilitator) Supported() []*types.SupportedKind {
 	return []*types.SupportedKind{
 		{
-			Scheme:  string(types.Sui),
-			Network: string(types.Sui),
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(types.Exact),
+			Network:     "sui:*",
 		},
 	}
 }
+
+// CaipFamily returns the CAIP-2 family pattern for Sui networks.
+func (t *SuiFacilitator) CaipFamily() string { return "sui:*" }
+
+// GetSigners returns no addresses — the Sui facilitator is a stub.
+func (t *SuiFacilitator) GetSigners() []string { return nil }
