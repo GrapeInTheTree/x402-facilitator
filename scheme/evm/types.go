@@ -70,6 +70,49 @@ type Authorization struct {
 	Nonce       [32]byte
 }
 
+type authorizationWire struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Value       string `json:"value"`
+	ValidAfter  string `json:"validAfter"`
+	ValidBefore string `json:"validBefore"`
+	Nonce       string `json:"nonce"`
+}
+
+func (a Authorization) MarshalJSON() ([]byte, error) {
+	return json.Marshal(authorizationWire{
+		From:        a.From.Hex(),
+		To:          a.To.Hex(),
+		Value:       decimalBigInt(a.Value),
+		ValidAfter:  decimalBigInt(a.ValidAfter),
+		ValidBefore: decimalBigInt(a.ValidBefore),
+		Nonce:       hex32(a.Nonce),
+	})
+}
+
+func (a *Authorization) UnmarshalJSON(data []byte) error {
+	var w authorizationWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	a.From = common.HexToAddress(w.From)
+	a.To = common.HexToAddress(w.To)
+	var err error
+	if a.Value, err = parseDecimalBigInt(w.Value); err != nil {
+		return fmt.Errorf("authorization.value: %w", err)
+	}
+	if a.ValidAfter, err = parseDecimalBigInt(w.ValidAfter); err != nil {
+		return fmt.Errorf("authorization.validAfter: %w", err)
+	}
+	if a.ValidBefore, err = parseDecimalBigInt(w.ValidBefore); err != nil {
+		return fmt.Errorf("authorization.validBefore: %w", err)
+	}
+	if a.Nonce, err = parseHex32(w.Nonce); err != nil {
+		return fmt.Errorf("authorization.nonce: %w", err)
+	}
+	return nil
+}
+
 var (
 	// EIP-3009 domain separator
 	AuthorizationTypeHash = Keccak256([]byte("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"))
@@ -169,6 +212,43 @@ func leftPadBytes(b []byte, size int) []byte {
 	return padded
 }
 
+func decimalBigInt(n *big.Int) string {
+	if n == nil {
+		return "0"
+	}
+	return n.String()
+}
+
+func parseDecimalBigInt(s string) (*big.Int, error) {
+	if s == "" {
+		return nil, errors.New("empty decimal")
+	}
+	n, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid decimal %q", s)
+	}
+	return n, nil
+}
+
+func hex32(b [32]byte) string {
+	return "0x" + hex.EncodeToString(b[:])
+}
+
+func parseHex32(s string) ([32]byte, error) {
+	var out [32]byte
+	s = strings.TrimPrefix(s, "0x")
+	s = strings.TrimPrefix(s, "0X")
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return out, fmt.Errorf("invalid hex: %w", err)
+	}
+	if len(b) != 32 {
+		return out, fmt.Errorf("expected 32 bytes, got %d", len(b))
+	}
+	copy(out[:], b)
+	return out, nil
+}
+
 // Utility to convert hex string to Address
 func ParseAddress(hexStr string) (common.Address, error) {
 	var a common.Address
@@ -187,10 +267,60 @@ type Permit2TokenPermissions struct {
 	Amount *big.Int       `json:"amount"`
 }
 
+type permit2TokenPermissionsWire struct {
+	Token  string `json:"token"`
+	Amount string `json:"amount"`
+}
+
+func (p Permit2TokenPermissions) MarshalJSON() ([]byte, error) {
+	return json.Marshal(permit2TokenPermissionsWire{
+		Token:  p.Token.Hex(),
+		Amount: decimalBigInt(p.Amount),
+	})
+}
+
+func (p *Permit2TokenPermissions) UnmarshalJSON(data []byte) error {
+	var w permit2TokenPermissionsWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	p.Token = common.HexToAddress(w.Token)
+	var err error
+	if p.Amount, err = parseDecimalBigInt(w.Amount); err != nil {
+		return fmt.Errorf("permit2TokenPermissions.amount: %w", err)
+	}
+	return nil
+}
+
 // Permit2Witness represents witness data for x402ExactPermit2Proxy.
 type Permit2Witness struct {
 	To         common.Address `json:"to"`
 	ValidAfter *big.Int       `json:"validAfter"`
+}
+
+type permit2WitnessWire struct {
+	To         string `json:"to"`
+	ValidAfter string `json:"validAfter"`
+}
+
+func (pw Permit2Witness) MarshalJSON() ([]byte, error) {
+	return json.Marshal(permit2WitnessWire{
+		To:         pw.To.Hex(),
+		ValidAfter: decimalBigInt(pw.ValidAfter),
+	})
+}
+
+func (pw *Permit2Witness) UnmarshalJSON(data []byte) error {
+	var w permit2WitnessWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	pw.To = common.HexToAddress(w.To)
+	var err error
+	if pw.ValidAfter, err = parseDecimalBigInt(w.ValidAfter); err != nil {
+		return fmt.Errorf("permit2Witness.validAfter: %w", err)
+	}
+	return nil
 }
 
 // Permit2Authorization represents the PermitWitnessTransferFrom parameters.
@@ -201,6 +331,45 @@ type Permit2Authorization struct {
 	Nonce     *big.Int                `json:"nonce"`
 	Deadline  *big.Int                `json:"deadline"`
 	Witness   Permit2Witness          `json:"witness"`
+}
+
+type permit2AuthorizationWire struct {
+	From      string                  `json:"from"`
+	Permitted Permit2TokenPermissions `json:"permitted"`
+	Spender   string                  `json:"spender"`
+	Nonce     string                  `json:"nonce"`
+	Deadline  string                  `json:"deadline"`
+	Witness   Permit2Witness          `json:"witness"`
+}
+
+func (a Permit2Authorization) MarshalJSON() ([]byte, error) {
+	return json.Marshal(permit2AuthorizationWire{
+		From:      a.From.Hex(),
+		Permitted: a.Permitted,
+		Spender:   a.Spender.Hex(),
+		Nonce:     decimalBigInt(a.Nonce),
+		Deadline:  decimalBigInt(a.Deadline),
+		Witness:   a.Witness,
+	})
+}
+
+func (a *Permit2Authorization) UnmarshalJSON(data []byte) error {
+	var w permit2AuthorizationWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	a.From = common.HexToAddress(w.From)
+	a.Permitted = w.Permitted
+	a.Spender = common.HexToAddress(w.Spender)
+	var err error
+	if a.Nonce, err = parseDecimalBigInt(w.Nonce); err != nil {
+		return fmt.Errorf("permit2Authorization.nonce: %w", err)
+	}
+	if a.Deadline, err = parseDecimalBigInt(w.Deadline); err != nil {
+		return fmt.Errorf("permit2Authorization.deadline: %w", err)
+	}
+	a.Witness = w.Witness
+	return nil
 }
 
 // Permit2Payload represents a Permit2 payment payload.
