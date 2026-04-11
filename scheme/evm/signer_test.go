@@ -43,7 +43,7 @@ func TestPayloadSignVerify(t *testing.T) {
 	signer := NewRawPrivateSigner(privKey.Serialize())
 
 	// Create a message to sign
-	chain := "base-sepolia"
+	chain := "eip155:84532"
 	token := "USDC"
 
 	payload, err := NewEVMPayload(chain, token,
@@ -103,7 +103,7 @@ func TestPermit2PayloadSignVerify(t *testing.T) {
 
 	signer := NewRawPrivateSigner(privKey.Serialize())
 
-	chain := "base-sepolia"
+	chain := "eip155:84532"
 	token := "USDC"
 
 	payload, err := NewPermit2Payload(chain, token,
