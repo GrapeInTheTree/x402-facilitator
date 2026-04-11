@@ -46,13 +46,9 @@ func (t *SolanaFacilitator) Settle(ctx context.Context, payload *types.PaymentPa
 }
 
 func (t *SolanaFacilitator) Supported() []*types.SupportedKind {
-	return []*types.SupportedKind{
-		{
-			X402Version: int(types.X402VersionV2),
-			Scheme:      string(types.Exact),
-			Network:     "solana:*",
-		},
-	}
+	// Verify/Settle are not yet v2-compliant; gated from discovery so
+	// clients do not pick this facilitator for Solana payments.
+	return nil
 }
 
 // CaipFamily returns the CAIP-2 family pattern for Solana clusters.
