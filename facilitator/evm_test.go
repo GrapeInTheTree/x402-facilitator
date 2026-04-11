@@ -13,7 +13,7 @@ import (
 
 const (
 	PrivateKey = ""
-	Network    = "base-sepolia"
+	Network    = "eip155:84532"
 	Token      = "USDC"
 )
 
@@ -29,17 +29,19 @@ func TestEVMVerify(t *testing.T) {
 
 	evmPayloadJson, err := json.Marshal(evmPayload)
 	require.NoError(t, err)
+	var payloadMap map[string]interface{}
+	require.NoError(t, json.Unmarshal(evmPayloadJson, &payloadMap))
 
-	payload := &types.PaymentPayload{
-		X402Version: int(types.X402VersionV1),
-		Scheme:      string(types.EVM),
-		Network:     Network,
-		Payload:     evmPayloadJson,
-	}
 	req := &types.PaymentRequirements{
-		Scheme:  string(types.EVM),
+		Scheme:  string(types.Exact),
 		Network: Network,
 		Asset:   Token,
+		Amount:  "10000",
+	}
+	payload := &types.PaymentPayload{
+		X402Version: int(types.X402VersionV2),
+		Payload:     payloadMap,
+		Accepted:    *req,
 	}
 
 	res, err := facilitator.Verify(t.Context(), payload, req)
@@ -60,18 +62,19 @@ func TestEVMSettle(t *testing.T) {
 	require.NoError(t, err)
 	evmPayloadJson, err := json.Marshal(evmPayload)
 	require.NoError(t, err)
-
-	payload := &types.PaymentPayload{
-		X402Version: int(types.X402VersionV1),
-		Scheme:      string(types.EVM),
-		Network:     Network,
-		Payload:     evmPayloadJson,
-	}
+	var payloadMap map[string]interface{}
+	require.NoError(t, json.Unmarshal(evmPayloadJson, &payloadMap))
 
 	req := &types.PaymentRequirements{
-		Scheme:  string(types.EVM),
+		Scheme:  string(types.Exact),
 		Network: Network,
 		Asset:   Token,
+		Amount:  "10000",
+	}
+	payload := &types.PaymentPayload{
+		X402Version: int(types.X402VersionV2),
+		Payload:     payloadMap,
+		Accepted:    *req,
 	}
 
 	res, err := facilitator.Settle(t.Context(), payload, req)

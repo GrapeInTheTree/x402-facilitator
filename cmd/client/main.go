@@ -33,8 +33,8 @@ func init() {
 	fs := cmd.PersistentFlags()
 
 	fs.StringVarP(&url, "url", "u", "http://localhost:9090", "Base URL of the facilitator server")
-	fs.StringVarP(&scheme, "scheme", "s", "evm", "Scheme to use")
-	fs.StringVarP(&network, "network", "n", "base-sepolia", "Blockchain network to use")
+	fs.StringVarP(&scheme, "scheme", "s", "exact", "Scheme to use")
+	fs.StringVarP(&network, "network", "n", "eip155:84532", "Blockchain network to use")
 	fs.StringVarP(&token, "token", "t", "USDC", "token contract for sending")
 	fs.StringVarP(&from, "from", "F", "", "Sender address")
 	fs.StringVarP(&to, "to", "T", "", "Recipient address")
@@ -61,7 +61,7 @@ func run(cmd *cobra.Command, args []string) {
 	var paymentPayload *types.PaymentPayload
 	var paymentRequirements *types.PaymentRequirements
 	switch scheme {
-	case "evm":
+	case "exact":
 		priv, err := hex.DecodeString(privkey)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to decode private key")
@@ -90,17 +90,25 @@ func run(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		paymentPayload = &types.PaymentPayload{
-			X402Version: int(types.X402VersionV1),
-			Scheme:      scheme,
-			Network:     network,
-			Payload:     jsonPayload,
+		// v2 PaymentPayload carries its payload as a decoded map so clients
+		// built on the upstream x402 SDK can reason about it without parsing
+		// raw JSON.
+		var payloadMap map[string]interface{}
+		if err := json.Unmarshal(jsonPayload, &payloadMap); err != nil {
+			log.Fatal().Err(err).Msg("Failed to decode payload into map")
 		}
+
 		paymentRequirements = &types.PaymentRequirements{
 			Scheme:  scheme,
 			Network: network,
-			PayTo:   to,
 			Asset:   token,
+			Amount:  amount,
+			PayTo:   to,
+		}
+		paymentPayload = &types.PaymentPayload{
+			X402Version: int(types.X402VersionV2),
+			Payload:     payloadMap,
+			Accepted:    *paymentRequirements,
 		}
 	}
 

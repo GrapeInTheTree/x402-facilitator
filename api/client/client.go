@@ -31,17 +31,16 @@ func NewClient(baseURL string) (*Client, error) {
 
 // Supported fetches the list of supported schemes.
 func (c *Client) Supported(ctx context.Context) ([]types.SupportedKind, error) {
-	var result []types.SupportedKind
+	var result types.SupportedResponse
 	if err := c.doRequest(ctx, http.MethodGet, "/supported", nil, "", &result); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return result.Kinds, nil
 }
 
 func (c *Client) Verify(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentVerifyResponse, error) {
 	body := types.PaymentVerifyRequest{
-		X402Version:         int(types.X402VersionV1),
-		PaymentHeader:       *payload,
+		PaymentPayload:      *payload,
 		PaymentRequirements: *req,
 	}
 
@@ -55,8 +54,7 @@ func (c *Client) Verify(ctx context.Context, payload *types.PaymentPayload, req 
 // Settle sends a payment settlement request.
 func (c *Client) Settle(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentSettleResponse, error) {
 	body := types.PaymentSettleRequest{
-		X402Version:         int(types.X402VersionV1),
-		PaymentHeader:       *payload,
+		PaymentPayload:      *payload,
 		PaymentRequirements: *req,
 	}
 

@@ -1,91 +1,67 @@
 package types
 
-import "encoding/json"
+import (
+	"github.com/gosuda/x402-facilitator/internal/sdk"
+)
 
-// Specification: https://github.com/coinbase/x402/tree/main?tab=readme-ov-file#type-specifications
+// Specification: https://github.com/coinbase/x402/blob/main/specs/x402-specification.md
+//
+// The wire types below are intentionally type aliases of the upstream x402
+// Go SDK v2 definitions. Aliasing (rather than re-declaring) keeps this
+// facilitator byte-compatible with every x402 v2 client at compile time —
+// any upstream field rename or addition surfaces as a local build error.
 
-// PaymentRequirements defines the structure for accepted payments by the resource server.
-// This corresponds to the server's response in the 402 Payment Required flow.
-type PaymentRequirements struct {
-	// Scheme of the payment protocol to use (e.g., "exact")
-	Scheme string `json:"scheme"`
-	// Network of the blockchain to send payment on (e.g., "base-sepolia")
-	Network string `json:"network"`
-	// Maximum amount required to pay for the resource in atomic units
-	MaxAmountRequired string `json:"maxAmountRequired"`
-	// URL of the resource to pay for
-	Resource string `json:"resource"`
-	// Description of the resource
-	Description string `json:"description"`
-	// MIME type of the resource response
-	MimeType string `json:"mimeType"`
-	// Address to pay value to
-	PayTo string `json:"payTo"`
-	// Maximum time in seconds for the resource server to respond
-	MaxTimeoutSeconds int `json:"maxTimeoutSeconds"`
-	// Address of the EIP-3009 compliant ERC20 contract
-	Asset string `json:"asset"`
-	// Output schema of the resource response (optional)
-	OutputSchema *json.RawMessage `json:"outputSchema,omitempty"`
-	// Extra information about the payment details specific to the scheme
-	Extra *json.RawMessage `json:"extra,omitempty"`
-}
+type (
+	// PaymentPayload is the v2 body a client sends in the X-PAYMENT header.
+	// Scheme and network live inside Accepted; Payload is a scheme-specific
+	// map (e.g. an EIP-3009 authorization for eip155, an SPL transfer for
+	// solana).
+	PaymentPayload = sdk.PaymentPayload
 
-// PaymentPayload represents the data the client sends in the X-PAYMENT header.
-type PaymentPayload struct {
-	// Version of the x402 payment protocol
-	X402Version int `json:"x402Version"`
-	// Scheme value of the accepted paymentRequirements the client is using to pay
-	Scheme string `json:"scheme"`
-	// Network ID of the accepted paymentRequirements the client is using to pay
-	Network string `json:"network"`
-	// Payload is E-dependent and may contain authorization and signature data
-	Payload json.RawMessage `json:"payload"`
-}
+	// PaymentRequirements describes what a resource server accepts. In v2
+	// the price field is called Amount; the v1 name MaxAmountRequired is
+	// gone.
+	PaymentRequirements = sdk.PaymentRequirements
 
-// PaymentVerifyRequest is the request body sent to facilitator's /verify endpoint.
+	// SupportedKind is a single (scheme, network) pair advertised by the
+	// facilitator on /supported.
+	SupportedKind = sdk.SupportedKind
+
+	// PaymentVerifyResponse is the /verify response body.
+	PaymentVerifyResponse = sdk.VerifyResponse
+
+	// PaymentSettleResponse is the /settle response body. In v2 the
+	// on-chain hash is Transaction (not TxHash) and Network is a CAIP-2
+	// identifier (not a numeric chain ID string).
+	PaymentSettleResponse = sdk.SettleResponse
+
+	// Network is a CAIP-2 network string (e.g. "eip155:84532") with a
+	// .Match helper for wildcard comparisons.
+	Network = sdk.Network
+)
+
+// HTTP wrapper types are kept local because swag generates the OpenAPI
+// schema from annotations in api/server.go and needs Go structs it can
+// resolve at generation time; the upstream SDK models /verify and /settle
+// bodies as opaque bytes at the network boundary.
+
+// PaymentVerifyRequest is the body POSTed to /verify.
 type PaymentVerifyRequest struct {
-	X402Version         int                 `json:"x402Version"`
-	PaymentHeader       PaymentPayload      `json:"paymentHeader"`
+	PaymentPayload      PaymentPayload      `json:"paymentPayload"`
 	PaymentRequirements PaymentRequirements `json:"paymentRequirements"`
 }
 
-// PaymentVerifyResponse is the response returned from the /verify endpoint.
-type PaymentVerifyResponse struct {
-	// Whether the payment payload is valid
-	IsValid bool `json:"isValid"`
-	// Error message or reason for invalidity, if applicable
-	InvalidReason string `json:"invalidReason,omitempty"`
-	Payer         string `json:"payer,omitempty"`
-}
-
-// PaymentSettleRequest is the request body sent to facilitator's /settle endpoint.
+// PaymentSettleRequest is the body POSTed to /settle.
 type PaymentSettleRequest struct {
-	X402Version         int                 `json:"x402Version"`
-	PaymentHeader       PaymentPayload      `json:"paymentHeader"`
+	PaymentPayload      PaymentPayload      `json:"paymentPayload"`
 	PaymentRequirements PaymentRequirements `json:"paymentRequirements"`
 }
 
-// PaymentSettleResponse is the response from the /settle endpoint.
-type PaymentSettleResponse struct {
-	// Whether the payment was successful
-	Success bool `json:"success"`
-	// Error message, if any
-	Error string `json:"error,omitempty"`
-	// Transaction hash of the settled payment
-	TxHash string `json:"txHash,omitempty"`
-	// Network ID where the transaction was submitted
-	NetworkId string `json:"networkId,omitempty"`
-}
-
-// SupportedKind represents a supported scheme and network pair
-// used in the /supported endpoint.
-type SupportedKind struct {
-	Scheme  string `json:"scheme"`
-	Network string `json:"network"`
-}
-
-// SupportedResponse is the response structure returned from the /supported endpoint.
+// SupportedResponse is the /supported response body. Signers groups
+// fee-paying addresses by CAIP-2 family (e.g. "eip155:*") so clients can
+// see every sender address this facilitator may broadcast from.
 type SupportedResponse struct {
-	Kinds []SupportedKind `json:"kinds"`
+	Kinds      []SupportedKind     `json:"kinds"`
+	Extensions []string            `json:"extensions"`
+	Signers    map[string][]string `json:"signers"`
 }
