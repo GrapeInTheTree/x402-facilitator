@@ -2,8 +2,21 @@ port = 9090 # HTTP Port
 
 # Config for accessing blockchains
 # TODO: support multiple chains. For now, this facilitator only supports one chain at a time
-scheme = "evm"                   # "evm", "solana", "sui", "tron"
-network = "base-sepolia"         # Network name
-url = "https://sepolia.base.org" # URL of the blockchain
-privateKey = ""
 
+# Payment protocol scheme. Currently only "exact" is supported; the value
+# is the x402 v2 scheme identifier, not a chain name.
+scheme = "exact"
+
+# Network in CAIP-2 format. Examples:
+#   eip155:84532  — Base Sepolia
+#   eip155:8453   — Base mainnet
+#   eip155:42161  — Arbitrum One
+network = "eip155:84532"
+
+# RPC endpoint the facilitator uses to verify and broadcast transactions
+# on the configured network.
+url = "https://sepolia.base.org"
+
+# Private key of the facilitator's fee payer (hex, no 0x prefix). Leave
+# empty in the repo; inject via your deployment's secret management.
+privateKey = ""
