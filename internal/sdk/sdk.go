@@ -23,8 +23,16 @@ type (
 	// PaymentRequirements defines the payment requirements from the resource server
 	PaymentRequirements = types.PaymentRequirements
 
+	// ResourceInfo describes the resource being paid for (moved out of
+	// PaymentRequirements and onto PaymentPayload in v2)
+	ResourceInfo = types.ResourceInfo
+
 	// SupportedKind represents a supported scheme and network pair
 	SupportedKind = types.SupportedKind
+
+	// SupportedResponse is the full /supported response body (kinds,
+	// protocol extensions, and signer addresses grouped by CAIP family)
+	SupportedResponse = types.SupportedResponse
 
 	// Network represents a blockchain network identifier (CAIP-2 format)
 	Network = x402.Network
