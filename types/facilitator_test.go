@@ -9,17 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestV2WireCompatibility round-trips every locally declared wire struct in
-// types/facilitator.go through the corresponding x402 v2 SDK type (via
-// internal/sdk) and asserts JSON equality. If the upstream SDK ever renames
-// a field or changes a JSON tag and go.mod is bumped, this test fails and
-// forces an explicit update of types/facilitator.go rather than letting the
-// public HTTP contract of /verify, /settle, and /supported drift silently.
-//
-// The local structs live in types/facilitator.go (rather than as aliases of
-// the SDK) because swaggo/swag cannot resolve an alias chain whose target
-// has the same short name in a different package; this test is the contract
-// that keeps those parallel declarations honest.
+// TestV2WireCompatibility round-trips every local wire struct through the
+// corresponding internal/sdk re-export and asserts JSON equality, so any
+// upstream field rename surfaces as a local test failure rather than
+// silently breaking /verify, /settle, and /supported.
 func TestV2WireCompatibility(t *testing.T) {
 	t.Run("PaymentRequirements", func(t *testing.T) {
 		local := types.PaymentRequirements{
@@ -121,10 +114,8 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 }
 
-// assertWireCompat marshals local to JSON, unmarshals the bytes into the
-// upstream SDK type SDK, re-marshals, and asserts that the two JSON blobs
-// are equal. Any field rename, tag change, or added required field between
-// the local struct and the upstream SDK type surfaces as a mismatch here.
+// assertWireCompat round-trips local through the SDK type and asserts JSON
+// equality, catching field renames and tag changes across the boundary.
 func assertWireCompat[SDK any](t *testing.T, local any) {
 	t.Helper()
 

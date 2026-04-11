@@ -45,11 +45,8 @@ func (t *SolanaFacilitator) Settle(ctx context.Context, payload *types.PaymentPa
 	return nil, nil
 }
 
-// Supported returns nil so this facilitator does not advertise itself on
-// /supported. Verify and Settle are still stubs; a follow-up PR will fill
-// them in and return a real SupportedResponse with a concrete CAIP-2
-// network identifier (e.g. solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp) and
-// the fee-payer address under "solana:*".
+// Supported returns nil: Verify and Settle are not yet v2-compliant, so
+// this facilitator is gated from discovery until a follow-up lands.
 func (t *SolanaFacilitator) Supported() *types.SupportedResponse {
 	return nil
 }

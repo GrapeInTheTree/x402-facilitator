@@ -21,9 +21,8 @@ func (t *TronFacilitator) Settle(ctx context.Context, payload *types.PaymentPayl
 	return nil, nil
 }
 
-// Supported returns nil so this facilitator does not advertise itself on
-// /supported. Verify and Settle are still stubs; a follow-up PR will fill
-// them in and return a real SupportedResponse.
+// Supported returns nil: Verify and Settle are not yet v2-compliant, so
+// this facilitator is gated from discovery until a follow-up lands.
 func (t *TronFacilitator) Supported() *types.SupportedResponse {
 	return nil
 }

@@ -76,10 +76,7 @@ func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFa
 	}, nil
 }
 
-// Verify detects the payload type and routes to the appropriate verification
-// method. v2 PaymentPayload.Payload is a decoded map, so we re-marshal it
-// once here and hand the JSON bytes to the scheme/evm helpers (which still
-// operate on bytes). This keeps scheme/evm untouched in the v2 migration.
+// Verify detects the payload type and routes to the appropriate verification method.
 func (t *EVMFacilitator) Verify(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentVerifyResponse, error) {
 	raw, err := json.Marshal(payload.Payload)
 	if err != nil {
@@ -109,10 +106,6 @@ func (t *EVMFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 	return t.settleEIP3009(ctx, payload, req, raw)
 }
 
-// Supported advertises this facilitator on /supported. It reports the
-// single (scheme, network) pair this instance was configured for, and
-// exposes its fee-payer address under the "eip155:*" CAIP-2 family so
-// clients can allowlist or audit the facilitator's on-chain sender.
 func (t *EVMFacilitator) Supported() *types.SupportedResponse {
 	return &types.SupportedResponse{
 		Kinds: []types.SupportedKind{{

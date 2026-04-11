@@ -55,9 +55,7 @@ func run(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Failed to create client")
 	}
 
-	// Build the signed payment payload for the selected scheme. Today the
-	// only supported scheme is "exact" on an eip155 network; the CLI
-	// routes on the scheme flag so new schemes can be added alongside it.
+	// Build a signed payment for the selected scheme
 	log.Info().Msg("Sending payment request")
 	var paymentPayload *types.PaymentPayload
 	var paymentRequirements *types.PaymentRequirements
@@ -91,9 +89,7 @@ func run(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		// v2 PaymentPayload carries its scheme-specific payload as a
-		// decoded map so clients built on the upstream x402 SDK can
-		// inspect it without parsing raw JSON.
+		// v2 PaymentPayload.Payload is a decoded map, not raw JSON
 		var payloadMap map[string]interface{}
 		if err := json.Unmarshal(jsonPayload, &payloadMap); err != nil {
 			log.Fatal().Err(err).Msg("Failed to decode payload into map")
