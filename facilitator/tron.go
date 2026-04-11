@@ -21,11 +21,8 @@ func (t *TronFacilitator) Settle(ctx context.Context, payload *types.PaymentPayl
 	return nil, nil
 }
 
-func (t *TronFacilitator) Supported() []*types.SupportedKind {
-	return []*types.SupportedKind{
-		{
-			Scheme:  string(types.Tron),
-			Network: string(types.Tron),
-		},
-	}
+// Supported returns nil: Verify and Settle are not yet v2-compliant, so
+// this facilitator is gated from discovery until a follow-up lands.
+func (t *TronFacilitator) Supported() *types.SupportedResponse {
+	return nil
 }

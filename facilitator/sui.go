@@ -21,11 +21,8 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 	return nil, nil
 }
 
-func (t *SuiFacilitator) Supported() []*types.SupportedKind {
-	return []*types.SupportedKind{
-		{
-			Scheme:  string(types.Sui),
-			Network: string(types.Sui),
-		},
-	}
+// Supported returns nil: Verify and Settle are not yet v2-compliant, so
+// this facilitator is gated from discovery until a follow-up lands.
+func (t *SuiFacilitator) Supported() *types.SupportedResponse {
+	return nil
 }

@@ -7,13 +7,22 @@
 - Docker
 - Docker Compose
 
-## Support Schemes
-| Scheme     | Status           | Description                   |
-|------------|------------------|-------------------------------|
-| EVM       | ✅ Supported      | Ethereum and EVM chains       |
-| Solana    | 🚧 Planned        |                               |
-| Sui       | 🚧 Planned        |                               |
-| Tron      | 🚧 Planned        |                               |
+## Supported schemes × networks
+
+x402 v2 treats the payment **scheme** (the on-chain protocol used to move
+funds) and the **network** (which chain that protocol runs on) as two
+independent axes. This facilitator currently supports:
+
+| Scheme  | `eip155:*` (EVM) | `solana:*` | `sui:*` | `tron:*` |
+|---------|:----------------:|:----------:|:-------:|:--------:|
+| `exact` |        ✅        |     🚧     |   🚧    |    🚧    |
+
+Networks are specified in [CAIP-2](https://chainagnostic.org/CAIPs/caip-2)
+format (e.g. `eip155:84532` for Base Sepolia, `eip155:8453` for Base
+mainnet, `eip155:42161` for Arbitrum One). The `exact` scheme supports
+both EIP-3009 `transferWithAuthorization` and Permit2
+`PermitWitnessTransferFrom` payloads on EVM chains; see the `--method`
+flag on `x402-client` to pick between them.
 
 ## How to run
 
@@ -31,15 +40,28 @@ docker compose up
 
 #### 2. Configuration
 x402-facilitator is configured via `config.toml`.
-```
+```toml
 # Port for HTTP server (default: 9090)
 port = 9090
 
-# Blockchain access configuration
-scheme = "evm"                   # Supported: "evm", "solana", "sui", "tron"
-network = "base-sepolia"         # Network or chain name
-url = "https://sepolia.base.org" # RPC endpoint or node URL
-privateKey = ""                  # Private key for fee payer (hex string)
+# Payment protocol scheme. Currently only "exact" is supported; the
+# value is the x402 v2 scheme identifier, not a chain name.
+scheme = "exact"
+
+# Network in CAIP-2 format. Examples:
+#   eip155:84532  — Base Sepolia
+#   eip155:8453   — Base mainnet
+#   eip155:42161  — Arbitrum One
+network = "eip155:84532"
+
+# RPC endpoint the facilitator uses to verify and broadcast
+# transactions on the configured network.
+url = "https://sepolia.base.org"
+
+# Private key of the facilitator's fee payer (hex, no 0x prefix).
+# Leave empty in the repo; inject via your deployment's secret
+# management.
+privateKey = ""
 ```
 
 #### 3. Api Specification
@@ -57,15 +79,16 @@ Flags:
   -A, --amount string    Amount to send
   -F, --from string      Sender address
   -h, --help             help for x402-client
-  -n, --network string   Blockchain network to use (default "base-sepolia")
+  -m, --method string    Payment method (eip3009 or permit2) (default "eip3009")
+  -n, --network string   CAIP-2 network to pay on (default "eip155:84532")
   -P, --privkey string   Sender private key
-  -s, --scheme string    Scheme to use (default "evm")
+  -s, --scheme string    Payment scheme to use (default "exact")
   -T, --to string        Recipient address
   -t, --token string     token contract for sending (default "USDC")
   -u, --url string       Base URL of the facilitator server (default "http://localhost:9090")
 
 Example:
-  x402-client -n base-sepolia -s evm -t USDC -F {0xYourSenderAddress} -T {0xRecipientAddress} -P {YourPrivateKey} -A 1000
+  x402-client -n eip155:84532 -s exact -t USDC -F {0xYourSenderAddress} -T {0xRecipientAddress} -P {YourPrivateKey} -A 1000
 ```
 
 

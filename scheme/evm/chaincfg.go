@@ -34,15 +34,16 @@ func GetChainName(chainID *big.Int) string {
 	return chainName[int(chainID.Int64())]
 }
 
+// chainName maps an EVM chain ID to its CAIP-2 network identifier.
+// Entries here must have a corresponding chainInfo row below — otherwise
+// NewEVMFacilitator would accept the network at constructor time and then
+// fail later inside GetDomainConfig at verify/settle time.
 var chainName = map[int]string{
-	1:        "ethereum",
-	11155111: "sepolia",
-	8453:     "base",
-	84532:    "base-sepolia",
-	10:       "optimism",
-	11155420: "optimism-sepolia",
-	42161:    "arbitrum",
-	421614:   "arbitrum-sepolia",
+	1:      "eip155:1",
+	8453:   "eip155:8453",
+	84532:  "eip155:84532",
+	42161:  "eip155:42161",
+	421614: "eip155:421614",
 }
 
 type ChainInfo struct {
@@ -67,20 +68,30 @@ func GetChainID(chain string) *big.Int {
 	return chainInfo.ChainID
 }
 
-func GetDomainConfig(chain, token string) *DomainConfig {
-	chainInfo, ok := chainInfo[chain]
+func GetDomainConfig(chain, asset string) *DomainConfig {
+	info, ok := chainInfo[chain]
 	if !ok {
 		return nil
 	}
-	domainConfig, ok := chainInfo.TokenContracts[token]
+	// v2 callers send the token contract address; reverse-resolve by VerifyingContract.
+	if strings.HasPrefix(asset, "0x") && len(asset) == 42 {
+		addr := common.HexToAddress(asset)
+		for _, cfg := range info.TokenContracts {
+			if cfg.VerifyingContract == addr {
+				return &cfg
+			}
+		}
+		return nil
+	}
+	cfg, ok := info.TokenContracts[asset]
 	if !ok {
 		return nil
 	}
-	return &domainConfig
+	return &cfg
 }
 
 var chainInfo = map[string]ChainInfo{
-	"ethereum": {
+	"eip155:1": {
 		ChainID: big.NewInt(1),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
@@ -91,7 +102,7 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
-	"base": {
+	"eip155:8453": {
 		ChainID:    big.NewInt(8453),
 		DefaultUrl: "https://mainnet.base.org",
 		TokenContracts: map[string]DomainConfig{
@@ -103,7 +114,7 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
-	"base-sepolia": {
+	"eip155:84532": {
 		ChainID:    big.NewInt(84532),
 		DefaultUrl: "https://sepolia.base.org",
 		TokenContracts: map[string]DomainConfig{
@@ -115,7 +126,7 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
-	"arbitrum": {
+	"eip155:42161": {
 		ChainID:    big.NewInt(42161),
 		DefaultUrl: "https://arb1.arbitrum.io/rpc",
 		TokenContracts: map[string]DomainConfig{
@@ -127,7 +138,7 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
-	"arbitrum-sepolia": {
+	"eip155:421614": {
 		ChainID:    big.NewInt(421614),
 		DefaultUrl: "https://sepolia-rollup.arbitrum.io/rpc",
 		TokenContracts: map[string]DomainConfig{
