@@ -21,18 +21,9 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 	return nil, nil
 }
 
-// Supported advertises this facilitator on /supported. Sui Verify and
-// Settle are still stubs; the SupportedResponse carried here is a
-// placeholder that a follow-up commit gates to nil until a real
-// implementation lands.
+// Supported returns nil so this facilitator does not advertise itself on
+// /supported. Verify and Settle are still stubs; a follow-up PR will fill
+// them in and return a real SupportedResponse.
 func (t *SuiFacilitator) Supported() *types.SupportedResponse {
-	return &types.SupportedResponse{
-		Kinds: []types.SupportedKind{{
-			X402Version: int(types.X402VersionV2),
-			Scheme:      string(types.Exact),
-			Network:     "sui:*",
-		}},
-		Extensions: []string{},
-		Signers:    map[string][]string{"sui:*": nil},
-	}
+	return nil
 }

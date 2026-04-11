@@ -45,20 +45,11 @@ func (t *SolanaFacilitator) Settle(ctx context.Context, payload *types.PaymentPa
 	return nil, nil
 }
 
-// Supported advertises this facilitator on /supported. Solana Verify and
-// Settle are still stubs; the SupportedResponse carried here is a
-// placeholder that a follow-up commit gates to nil until a real
-// implementation lands.
+// Supported returns nil so this facilitator does not advertise itself on
+// /supported. Verify and Settle are still stubs; a follow-up PR will fill
+// them in and return a real SupportedResponse with a concrete CAIP-2
+// network identifier (e.g. solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp) and
+// the fee-payer address under "solana:*".
 func (t *SolanaFacilitator) Supported() *types.SupportedResponse {
-	return &types.SupportedResponse{
-		Kinds: []types.SupportedKind{{
-			X402Version: int(types.X402VersionV2),
-			Scheme:      string(t.scheme),
-			Network:     "solana:*",
-		}},
-		Extensions: []string{},
-		Signers: map[string][]string{
-			"solana:*": {t.feePayer.PublicKey.String()},
-		},
-	}
+	return nil
 }

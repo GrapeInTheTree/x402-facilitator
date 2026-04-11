@@ -21,18 +21,9 @@ func (t *TronFacilitator) Settle(ctx context.Context, payload *types.PaymentPayl
 	return nil, nil
 }
 
-// Supported advertises this facilitator on /supported. Tron Verify and
-// Settle are still stubs; the SupportedResponse carried here is a
-// placeholder that a follow-up commit gates to nil until a real
-// implementation lands.
+// Supported returns nil so this facilitator does not advertise itself on
+// /supported. Verify and Settle are still stubs; a follow-up PR will fill
+// them in and return a real SupportedResponse.
 func (t *TronFacilitator) Supported() *types.SupportedResponse {
-	return &types.SupportedResponse{
-		Kinds: []types.SupportedKind{{
-			X402Version: int(types.X402VersionV2),
-			Scheme:      string(types.Exact),
-			Network:     "tron:*",
-		}},
-		Extensions: []string{},
-		Signers:    map[string][]string{"tron:*": nil},
-	}
+	return nil
 }
