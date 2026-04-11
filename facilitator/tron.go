@@ -21,11 +21,18 @@ func (t *TronFacilitator) Settle(ctx context.Context, payload *types.PaymentPayl
 	return nil, nil
 }
 
-func (t *TronFacilitator) Supported() []*types.SupportedKind {
-	return []*types.SupportedKind{
-		{
-			Scheme:  string(types.Tron),
-			Network: string(types.Tron),
-		},
+// Supported advertises this facilitator on /supported. Tron Verify and
+// Settle are still stubs; the SupportedResponse carried here is a
+// placeholder that a follow-up commit gates to nil until a real
+// implementation lands.
+func (t *TronFacilitator) Supported() *types.SupportedResponse {
+	return &types.SupportedResponse{
+		Kinds: []types.SupportedKind{{
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(types.Exact),
+			Network:     "tron:*",
+		}},
+		Extensions: []string{},
+		Signers:    map[string][]string{"tron:*": nil},
 	}
 }

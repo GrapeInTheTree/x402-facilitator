@@ -13,8 +13,9 @@ import (
 
 const (
 	PrivateKey = ""
-	Network    = "base-sepolia"
+	Network    = "eip155:84532"
 	Token      = "USDC"
+	Amount     = "10000"
 )
 
 func TestEVMVerify(t *testing.T) {
@@ -24,22 +25,24 @@ func TestEVMVerify(t *testing.T) {
 	privKey, err := hex.DecodeString("")
 	require.NoError(t, err)
 	evmPayload, err := evm.NewEVMPayload(Network, Token,
-		"", "", "10000", evm.NewRawPrivateSigner(privKey))
+		"", "", Amount, evm.NewRawPrivateSigner(privKey))
 	require.NoError(t, err)
 
 	evmPayloadJson, err := json.Marshal(evmPayload)
 	require.NoError(t, err)
+	var payloadMap map[string]interface{}
+	require.NoError(t, json.Unmarshal(evmPayloadJson, &payloadMap))
 
-	payload := &types.PaymentPayload{
-		X402Version: int(types.X402VersionV1),
-		Scheme:      string(types.EVM),
-		Network:     Network,
-		Payload:     evmPayloadJson,
-	}
 	req := &types.PaymentRequirements{
-		Scheme:  string(types.EVM),
+		Scheme:  string(types.Exact),
 		Network: Network,
 		Asset:   Token,
+		Amount:  Amount,
+	}
+	payload := &types.PaymentPayload{
+		X402Version: int(types.X402VersionV2),
+		Payload:     payloadMap,
+		Accepted:    *req,
 	}
 
 	res, err := facilitator.Verify(t.Context(), payload, req)
@@ -56,22 +59,23 @@ func TestEVMSettle(t *testing.T) {
 	privKey, err := hex.DecodeString("")
 	require.NoError(t, err)
 	evmPayload, err := evm.NewEVMPayload(Network, Token,
-		"", "", "10000", evm.NewRawPrivateSigner(privKey))
+		"", "", Amount, evm.NewRawPrivateSigner(privKey))
 	require.NoError(t, err)
 	evmPayloadJson, err := json.Marshal(evmPayload)
 	require.NoError(t, err)
-
-	payload := &types.PaymentPayload{
-		X402Version: int(types.X402VersionV1),
-		Scheme:      string(types.EVM),
-		Network:     Network,
-		Payload:     evmPayloadJson,
-	}
+	var payloadMap map[string]interface{}
+	require.NoError(t, json.Unmarshal(evmPayloadJson, &payloadMap))
 
 	req := &types.PaymentRequirements{
-		Scheme:  string(types.EVM),
+		Scheme:  string(types.Exact),
 		Network: Network,
 		Asset:   Token,
+		Amount:  Amount,
+	}
+	payload := &types.PaymentPayload{
+		X402Version: int(types.X402VersionV2),
+		Payload:     payloadMap,
+		Accepted:    *req,
 	}
 
 	res, err := facilitator.Settle(t.Context(), payload, req)

@@ -29,19 +29,20 @@ func NewClient(baseURL string) (*Client, error) {
 	}, nil
 }
 
-// Supported fetches the list of supported schemes.
-func (c *Client) Supported(ctx context.Context) ([]types.SupportedKind, error) {
-	var result []types.SupportedKind
+// Supported fetches the facilitator's v2 /supported response.
+func (c *Client) Supported(ctx context.Context) (*types.SupportedResponse, error) {
+	var result types.SupportedResponse
 	if err := c.doRequest(ctx, http.MethodGet, "/supported", nil, "", &result); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return &result, nil
 }
 
+// Verify asks the facilitator to validate a signed payment without
+// broadcasting it on-chain.
 func (c *Client) Verify(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentVerifyResponse, error) {
 	body := types.PaymentVerifyRequest{
-		X402Version:         int(types.X402VersionV1),
-		PaymentHeader:       *payload,
+		PaymentPayload:      *payload,
 		PaymentRequirements: *req,
 	}
 
@@ -52,11 +53,10 @@ func (c *Client) Verify(ctx context.Context, payload *types.PaymentPayload, req 
 	return &resp, nil
 }
 
-// Settle sends a payment settlement request.
+// Settle asks the facilitator to broadcast a verified payment on-chain.
 func (c *Client) Settle(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentSettleResponse, error) {
 	body := types.PaymentSettleRequest{
-		X402Version:         int(types.X402VersionV1),
-		PaymentHeader:       *payload,
+		PaymentPayload:      *payload,
 		PaymentRequirements: *req,
 	}
 

@@ -65,7 +65,7 @@ func (s *server) Settle(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Received malformed settlement request")
 	}
 
-	settle, err := s.facilitator.Settle(ctx, &settleRequest.PaymentHeader, &settleRequest.PaymentRequirements)
+	settle, err := s.facilitator.Settle(ctx, &settleRequest.PaymentPayload, &settleRequest.PaymentRequirements)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
@@ -92,7 +92,7 @@ func (s *server) Verify(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Received malformed payment requirements")
 	}
 
-	verified, err := s.facilitator.Verify(ctx, &requirement.PaymentHeader, &requirement.PaymentRequirements)
+	verified, err := s.facilitator.Verify(ctx, &requirement.PaymentPayload, &requirement.PaymentRequirements)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
@@ -105,14 +105,14 @@ func (s *server) Verify(c echo.Context) error {
 // @Description  Get supported payment kinds
 // @Tags         payments
 // @Produce      json
-// @Success      200  {array}   types.SupportedKind
+// @Success      200  {object}  types.SupportedResponse
 // @Failure      404  {object}  echo.HTTPError
 // @Router       /supported [get]
 func (s *server) Supported(c echo.Context) error {
-	kinds := s.facilitator.Supported()
-	if len(kinds) == 0 {
+	resp := s.facilitator.Supported()
+	if resp == nil || len(resp.Kinds) == 0 {
 		return echo.NewHTTPError(http.StatusNotFound, "No supported payment kinds found")
 	}
 
-	return c.JSON(http.StatusOK, kinds)
+	return c.JSON(http.StatusOK, resp)
 }

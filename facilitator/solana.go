@@ -31,7 +31,7 @@ func NewSolanaFacilitator(network string, url string, privateKeyHex string) (*So
 	}
 
 	return &SolanaFacilitator{
-		scheme:   types.Solana,
+		scheme:   types.Exact,
 		client:   client,
 		feePayer: feePayer,
 	}, nil
@@ -45,11 +45,20 @@ func (t *SolanaFacilitator) Settle(ctx context.Context, payload *types.PaymentPa
 	return nil, nil
 }
 
-func (t *SolanaFacilitator) Supported() []*types.SupportedKind {
-	return []*types.SupportedKind{
-		{
-			Scheme:  string(types.Solana),
-			Network: string(types.Solana),
+// Supported advertises this facilitator on /supported. Solana Verify and
+// Settle are still stubs; the SupportedResponse carried here is a
+// placeholder that a follow-up commit gates to nil until a real
+// implementation lands.
+func (t *SolanaFacilitator) Supported() *types.SupportedResponse {
+	return &types.SupportedResponse{
+		Kinds: []types.SupportedKind{{
+			X402Version: int(types.X402VersionV2),
+			Scheme:      string(t.scheme),
+			Network:     "solana:*",
+		}},
+		Extensions: []string{},
+		Signers: map[string][]string{
+			"solana:*": {t.feePayer.PublicKey.String()},
 		},
 	}
 }
