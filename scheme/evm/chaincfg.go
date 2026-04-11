@@ -68,16 +68,26 @@ func GetChainID(chain string) *big.Int {
 	return chainInfo.ChainID
 }
 
-func GetDomainConfig(chain, token string) *DomainConfig {
-	chainInfo, ok := chainInfo[chain]
+func GetDomainConfig(chain, asset string) *DomainConfig {
+	info, ok := chainInfo[chain]
 	if !ok {
 		return nil
 	}
-	domainConfig, ok := chainInfo.TokenContracts[token]
+	// v2 callers send the token contract address; reverse-resolve by VerifyingContract.
+	if strings.HasPrefix(asset, "0x") && len(asset) == 42 {
+		addr := common.HexToAddress(asset)
+		for _, cfg := range info.TokenContracts {
+			if cfg.VerifyingContract == addr {
+				return &cfg
+			}
+		}
+		return nil
+	}
+	cfg, ok := info.TokenContracts[asset]
 	if !ok {
 		return nil
 	}
-	return &domainConfig
+	return &cfg
 }
 
 var chainInfo = map[string]ChainInfo{
