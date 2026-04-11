@@ -140,6 +140,12 @@ func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.Payme
 			InvalidReason: types.ErrInvalidPayloadFormat.Error(),
 		}, nil
 	}
+	if evmPayload.Authorization == nil {
+		return &types.PaymentVerifyResponse{
+			IsValid:       false,
+			InvalidReason: types.ErrInvalidPayloadFormat.Error(),
+		}, nil
+	}
 
 	// Step 2: Scheme verification (scheme lives inside payload.Accepted in v2).
 	if payload.Accepted.Scheme != string(t.scheme) || req.Scheme != string(t.scheme) {
@@ -244,19 +250,32 @@ func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.Payme
 }
 
 func (t *EVMFacilitator) settleEIP3009(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte) (*types.PaymentSettleResponse, error) {
+	network := types.Network(req.Network)
+
 	var evmPayload evm.EVMPayload
 	if err := json.Unmarshal(raw, &evmPayload); err != nil {
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrInvalidPayloadFormat.Error(),
+			Network:     network,
 		}, nil
 	}
+	if evmPayload.Authorization == nil {
+		return &types.PaymentSettleResponse{
+			Success:     false,
+			ErrorReason: types.ErrInvalidPayloadFormat.Error(),
+			Network:     network,
+		}, nil
+	}
+	payer := evmPayload.Authorization.From.String()
 
 	networkID := evm.GetChainID(req.Network)
 	if networkID == nil {
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrInvalidNetwork.Error(),
+			Payer:       payer,
+			Network:     network,
 		}, nil
 	}
 
@@ -265,15 +284,29 @@ func (t *EVMFacilitator) settleEIP3009(ctx context.Context, payload *types.Payme
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrTokenMismatch.Error(),
+			Payer:       payer,
+			Network:     network,
 		}, nil
 	}
 	contract, err := eip3009.NewEip3009(domainConfig.VerifyingContract, t.client)
 	if err != nil {
-		return nil, fmt.Errorf("contract bind failed: %w", err)
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrContractBindFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 	clientSig, err := evm.ParseSignature(evmPayload.Signature) // client signature
 	if err != nil {
-		return nil, err
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrInvalidSignatureFormat.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 
 	tx, err := contract.TransferWithAuthorization(
@@ -291,14 +324,20 @@ func (t *EVMFacilitator) settleEIP3009(ctx context.Context, payload *types.Payme
 		clientSig,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transfer with authorization %w", err)
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrTransactionFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 
 	return &types.PaymentSettleResponse{
 		Success:     true,
-		Payer:       evmPayload.Authorization.From.String(),
+		Payer:       payer,
 		Transaction: tx.Hash().Hex(),
-		Network:     types.Network(req.Network),
+		Network:     network,
 	}, nil
 }
 
@@ -489,11 +528,14 @@ func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.Payme
 }
 
 func (t *EVMFacilitator) settlePermit2(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte) (*types.PaymentSettleResponse, error) {
+	network := types.Network(req.Network)
+
 	var permit2Payload evm.Permit2Payload
 	if err := json.Unmarshal(raw, &permit2Payload); err != nil {
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrInvalidPayloadFormat.Error(),
+			Network:     network,
 		}, nil
 	}
 	auth := permit2Payload.Permit2Authorization
@@ -502,26 +544,42 @@ func (t *EVMFacilitator) settlePermit2(ctx context.Context, payload *types.Payme
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrInvalidPayloadFormat.Error(),
+			Network:     network,
 		}, nil
 	}
+	payer := auth.From.String()
 
 	networkID := evm.GetChainID(req.Network)
 	if networkID == nil {
 		return &types.PaymentSettleResponse{
 			Success:     false,
 			ErrorReason: types.ErrInvalidNetwork.Error(),
+			Payer:       payer,
+			Network:     network,
 		}, nil
 	}
 
 	// Bind to x402ExactPermit2Proxy contract
 	proxyContract, err := permit2.NewPermit2(evm.X402ExactPermit2ProxyAddress, t.client)
 	if err != nil {
-		return nil, fmt.Errorf("permit2 proxy contract bind failed: %w", err)
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrContractBindFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 
 	clientSig, err := evm.ParseSignature(permit2Payload.Signature)
 	if err != nil {
-		return nil, err
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrInvalidSignatureFormat.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 
 	// Build settle() arguments
@@ -554,13 +612,19 @@ func (t *EVMFacilitator) settlePermit2(ctx context.Context, payload *types.Payme
 		clientSig,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to settle permit2 payment: %w", err)
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrTransactionFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
 	}
 
 	return &types.PaymentSettleResponse{
 		Success:     true,
-		Payer:       auth.From.String(),
+		Payer:       payer,
 		Transaction: tx.Hash().Hex(),
-		Network:     types.Network(req.Network),
+		Network:     network,
 	}, nil
 }
