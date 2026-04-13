@@ -1,6 +1,6 @@
 package types
 
-// Specification: https://github.com/coinbase/x402/blob/main/specs/x402-specification.md
+// Specification: https://github.com/x402-foundation/x402/blob/main/specs/x402-specification.md
 //
 // These structs are redeclared locally (not aliased from internal/sdk) so
 // swaggo/swag can parse them during `make generate-api`; drift against the
