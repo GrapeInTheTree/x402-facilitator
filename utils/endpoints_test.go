@@ -1,0 +1,81 @@
+package utils_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/gosuda/x402-facilitator/utils"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEndpointCandidatesPrioritizesUserEndpoint(t *testing.T) {
+	defaults := []string{
+		"https://primary.publicnode.com",
+		"https://secondary.example.com",
+	}
+
+	candidates := utils.EndpointCandidates(" https://custom.example.com ", defaults)
+
+	require.Equal(t, []string{
+		"https://custom.example.com",
+		"https://primary.publicnode.com",
+		"https://secondary.example.com",
+	}, candidates)
+	require.Equal(t, []string{
+		"https://primary.publicnode.com",
+		"https://secondary.example.com",
+	}, defaults, "defaults should not be mutated")
+}
+
+func TestEndpointCandidatesDeduplicates(t *testing.T) {
+	candidates := utils.EndpointCandidates(
+		"https://primary.publicnode.com",
+		[]string{"https://PRIMARY.publicnode.com", "https://secondary.example.com"},
+	)
+
+	require.Equal(t, []string{
+		"https://primary.publicnode.com",
+		"https://secondary.example.com",
+	}, candidates)
+}
+
+func TestSelectEndpointFallsBackInOrder(t *testing.T) {
+	candidates := []string{"first", "second", "third"}
+	attempted := make([]string, 0, len(candidates))
+
+	selected, err := utils.SelectEndpoint(context.Background(), candidates, func(ctx context.Context, endpoint string) error {
+		attempted = append(attempted, endpoint)
+		if endpoint != "third" {
+			return errors.New("unavailable")
+		}
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "third", selected)
+	require.Equal(t, candidates, attempted)
+}
+
+func TestSelectEndpointReturnsFirstWithoutProbe(t *testing.T) {
+	selected, err := utils.SelectEndpoint(context.Background(), []string{"first", "second"}, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, "first", selected)
+}
+
+func TestDoWithEndpointRunsOperationUntilSuccess(t *testing.T) {
+	attempted := make([]string, 0, 2)
+
+	selected, err := utils.DoWithEndpoint(context.Background(), []string{"first", "second"}, func(ctx context.Context, endpoint string) error {
+		attempted = append(attempted, endpoint)
+		if endpoint == "first" {
+			return errors.New("unavailable")
+		}
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "second", selected)
+	require.Equal(t, []string{"first", "second"}, attempted)
+}

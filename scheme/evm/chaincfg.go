@@ -1,7 +1,9 @@
 package evm
 
 import (
+	"maps"
 	"math/big"
+	"slices"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -39,16 +41,19 @@ func GetChainName(chainID *big.Int) string {
 // NewEVMFacilitator would accept the network at constructor time and then
 // fail later inside GetDomainConfig at verify/settle time.
 var chainName = map[int]string{
-	1:      "eip155:1",
-	8453:   "eip155:8453",
-	84532:  "eip155:84532",
-	42161:  "eip155:42161",
-	421614: "eip155:421614",
+	1:        "eip155:1",
+	11155111: "eip155:11155111",
+	8453:     "eip155:8453",
+	84532:    "eip155:84532",
+	42161:    "eip155:42161",
+	421614:   "eip155:421614",
 }
 
 type ChainInfo struct {
 	ChainID        *big.Int
-	DefaultUrl     string
+	NetworkName    string
+	DefaultURLs    []string
+	Contracts      map[string]common.Address
 	TokenContracts map[string]DomainConfig
 }
 
@@ -57,6 +62,9 @@ func GetChainInfo(chain string) *ChainInfo {
 	if !ok {
 		return nil
 	}
+	chainInfo.DefaultURLs = slices.Clone(chainInfo.DefaultURLs)
+	chainInfo.Contracts = maps.Clone(chainInfo.Contracts)
+	chainInfo.TokenContracts = maps.Clone(chainInfo.TokenContracts)
 	return &chainInfo
 }
 
@@ -66,6 +74,35 @@ func GetChainID(chain string) *big.Int {
 		return nil
 	}
 	return chainInfo.ChainID
+}
+
+func GetNetworkName(chain string) string {
+	chainInfo, ok := chainInfo[chain]
+	if !ok {
+		return ""
+	}
+	return chainInfo.NetworkName
+}
+
+func GetDefaultURLs(chain string) []string {
+	chainInfo, ok := chainInfo[chain]
+	if !ok {
+		return nil
+	}
+	return slices.Clone(chainInfo.DefaultURLs)
+}
+
+func GetContractAddress(chain, name string) common.Address {
+	chainInfo, ok := chainInfo[chain]
+	if !ok {
+		return common.Address{}
+	}
+	for contractName, contractAddress := range chainInfo.Contracts {
+		if strings.EqualFold(contractName, name) {
+			return contractAddress
+		}
+	}
+	return common.Address{}
 }
 
 func GetDomainConfig(chain, asset string) *DomainConfig {
@@ -92,7 +129,12 @@ func GetDomainConfig(chain, asset string) *DomainConfig {
 
 var chainInfo = map[string]ChainInfo{
 	"eip155:1": {
-		ChainID: big.NewInt(1),
+		ChainID:     big.NewInt(1),
+		NetworkName: "Ethereum Mainnet",
+		DefaultURLs: []string{
+			"https://ethereum-rpc.publicnode.com",
+		},
+		Contracts: defaultProtocolContracts(),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
 				Name:              "USD Coin",
@@ -102,9 +144,30 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
+	"eip155:11155111": {
+		ChainID:     big.NewInt(11155111),
+		NetworkName: "Ethereum Sepolia",
+		DefaultURLs: []string{
+			"https://ethereum-sepolia-rpc.publicnode.com",
+		},
+		Contracts: defaultProtocolContracts(),
+		TokenContracts: map[string]DomainConfig{
+			"USDC": {
+				Name:              "USDC",
+				Version:           "2",
+				ChainID:           big.NewInt(11155111),
+				VerifyingContract: common.HexToAddress("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+			},
+		},
+	},
 	"eip155:8453": {
-		ChainID:    big.NewInt(8453),
-		DefaultUrl: "https://mainnet.base.org",
+		ChainID:     big.NewInt(8453),
+		NetworkName: "Base",
+		DefaultURLs: []string{
+			"https://base-rpc.publicnode.com",
+			"https://mainnet.base.org",
+		},
+		Contracts: defaultProtocolContracts(),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
 				Name:              "USD Coin",
@@ -115,8 +178,13 @@ var chainInfo = map[string]ChainInfo{
 		},
 	},
 	"eip155:84532": {
-		ChainID:    big.NewInt(84532),
-		DefaultUrl: "https://sepolia.base.org",
+		ChainID:     big.NewInt(84532),
+		NetworkName: "Base Sepolia",
+		DefaultURLs: []string{
+			"https://base-sepolia-rpc.publicnode.com",
+			"https://sepolia.base.org",
+		},
+		Contracts: defaultProtocolContracts(),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
 				Name:              "USDC",
@@ -127,8 +195,13 @@ var chainInfo = map[string]ChainInfo{
 		},
 	},
 	"eip155:42161": {
-		ChainID:    big.NewInt(42161),
-		DefaultUrl: "https://arb1.arbitrum.io/rpc",
+		ChainID:     big.NewInt(42161),
+		NetworkName: "Arbitrum One",
+		DefaultURLs: []string{
+			"https://arbitrum-one-rpc.publicnode.com",
+			"https://arb1.arbitrum.io/rpc",
+		},
+		Contracts: defaultProtocolContracts(),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
 				Name:              "USD Coin",
@@ -139,8 +212,13 @@ var chainInfo = map[string]ChainInfo{
 		},
 	},
 	"eip155:421614": {
-		ChainID:    big.NewInt(421614),
-		DefaultUrl: "https://sepolia-rollup.arbitrum.io/rpc",
+		ChainID:     big.NewInt(421614),
+		NetworkName: "Arbitrum Sepolia",
+		DefaultURLs: []string{
+			"https://arbitrum-sepolia-rpc.publicnode.com",
+			"https://sepolia-rollup.arbitrum.io/rpc",
+		},
+		Contracts: defaultProtocolContracts(),
 		TokenContracts: map[string]DomainConfig{
 			"USDC": {
 				Name:              "USDC",
@@ -150,4 +228,11 @@ var chainInfo = map[string]ChainInfo{
 			},
 		},
 	},
+}
+
+func defaultProtocolContracts() map[string]common.Address {
+	return map[string]common.Address{
+		"Permit2":               Permit2Address,
+		"X402ExactPermit2Proxy": X402ExactPermit2ProxyAddress,
+	}
 }

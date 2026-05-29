@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind/v2"
@@ -16,16 +18,19 @@ import (
 	"github.com/gosuda/x402-facilitator/scheme/evm/eip3009"
 	"github.com/gosuda/x402-facilitator/scheme/evm/permit2"
 	"github.com/gosuda/x402-facilitator/types"
+	"github.com/gosuda/x402-facilitator/utils"
 )
 
 var _ Facilitator = (*EVMFacilitator)(nil)
 
 type EVMFacilitator struct {
+	mu        sync.RWMutex
 	scheme    types.Scheme
 	network   string
 	networkID *big.Int
+	endpoint  string
+	endpoints []string
 
-	client  *ethclient.Client
 	signer  types.Signer
 	address common.Address
 }
@@ -33,26 +38,21 @@ type EVMFacilitator struct {
 func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFacilitator, error) {
 	if network == "" && url == "" {
 		return nil, fmt.Errorf("network or rpc url must be provided")
-	} else if url == "" {
-		// if url is not provided, use default URL
-		if chainInfo := evm.GetChainInfo(network); chainInfo == nil {
-			return nil, fmt.Errorf("unsupported network name: %s", network)
-		} else {
-			url = chainInfo.DefaultUrl
-		}
 	}
 
-	client, err := ethclient.Dial(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Ethereum client: %w", err)
+	chainInfo := evm.GetChainInfo(network)
+	if chainInfo == nil && url == "" {
+		return nil, fmt.Errorf("unsupported network name: %s", network)
 	}
-	networkId, err := client.NetworkID(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get network ID: %w", err)
+	defaultURLs := []string(nil)
+	if chainInfo != nil {
+		defaultURLs = chainInfo.DefaultURLs
 	}
-	chainName := evm.GetChainName(networkId)
-	if chainName == "" || chainName != network {
-		return nil, fmt.Errorf("unsupported network: %s", network)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	networkId, selectedURL, err := selectEVMEndpoint(dialCtx, network, url, defaultURLs)
+	if err != nil {
+		return nil, err
 	}
 
 	privateKey, err := hex.DecodeString(privateKeyHex)
@@ -69,11 +69,94 @@ func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFa
 		scheme:    types.Exact,
 		network:   network,
 		networkID: networkId,
+		endpoint:  selectedURL,
+		endpoints: utils.EndpointCandidates(selectedURL, defaultURLs),
 
-		client:  client,
 		signer:  signer,
 		address: address,
 	}, nil
+}
+
+func selectEVMEndpoint(ctx context.Context, network string, priorityURL string, defaultURLs []string) (*big.Int, string, error) {
+	candidates := utils.EndpointCandidates(priorityURL, defaultURLs)
+	var selectedNetworkID *big.Int
+	selectedURL, err := utils.SelectEndpoint(ctx, candidates, func(ctx context.Context, endpoint string) error {
+		client, networkID, err := dialEVMEndpoint(ctx, network, endpoint)
+		if err != nil {
+			return err
+		}
+		selectedNetworkID = networkID
+		client.Close()
+		return nil
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to connect to Ethereum endpoints: %w", err)
+	}
+
+	return selectedNetworkID, selectedURL, nil
+}
+
+func dialEVMEndpoint(ctx context.Context, network string, endpoint string) (*ethclient.Client, *big.Int, error) {
+	client, err := ethclient.DialContext(ctx, endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	networkID, err := client.NetworkID(ctx)
+	if err != nil {
+		client.Close()
+		return nil, nil, fmt.Errorf("failed to get network ID: %w", err)
+	}
+	chainName := evm.GetChainName(networkID)
+	if chainName == "" || chainName != network {
+		client.Close()
+		return nil, nil, fmt.Errorf("network mismatch: endpoint is %s, expected %s", chainName, network)
+	}
+
+	return client, networkID, nil
+}
+
+func (t *EVMFacilitator) evmEndpointCandidates() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return utils.EndpointCandidates(t.endpoint, t.endpoints)
+}
+
+func (t *EVMFacilitator) setActiveEVMEndpoint(endpoint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.endpoint = endpoint
+	t.endpoints = utils.EndpointCandidates(endpoint, t.endpoints)
+}
+
+func (t *EVMFacilitator) activeEVMEndpoint() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.endpoint
+}
+
+func (t *EVMFacilitator) verifyWithEndpointFallback(ctx context.Context, operation func(client *ethclient.Client) (*types.PaymentVerifyResponse, error)) (*types.PaymentVerifyResponse, error) {
+	var response *types.PaymentVerifyResponse
+	candidates := t.evmEndpointCandidates()
+	_, err := utils.DoWithEndpoint(ctx, candidates, func(ctx context.Context, endpoint string) error {
+		client, _, err := dialEVMEndpoint(ctx, t.network, endpoint)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		resp, err := operation(client)
+		if err != nil {
+			return err
+		}
+
+		response = resp
+		t.setActiveEVMEndpoint(endpoint)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify through Ethereum endpoints %s: %w", strings.Join(candidates, ", "), err)
+	}
+	return response, nil
 }
 
 // Verify detects the payload type and routes to the appropriate verification method.
@@ -86,9 +169,13 @@ func (t *EVMFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 	if evm.IsPermit2PayloadJSON(raw) {
-		return t.verifyPermit2(ctx, payload, req, raw)
+		return t.verifyWithEndpointFallback(ctx, func(client *ethclient.Client) (*types.PaymentVerifyResponse, error) {
+			return t.verifyPermit2(ctx, payload, req, raw, client)
+		})
 	}
-	return t.verifyEIP3009(ctx, payload, req, raw)
+	return t.verifyWithEndpointFallback(ctx, func(client *ethclient.Client) (*types.PaymentVerifyResponse, error) {
+		return t.verifyEIP3009(ctx, payload, req, raw, client)
+	})
 }
 
 // Settle detects the payload type and routes to the appropriate settlement method.
@@ -131,7 +218,7 @@ func (t *EVMFacilitator) Supported() *types.SupportedResponse {
 //   - ✅ verify value in payload is enough to cover paymentRequirements.maxAmountRequired
 //   - check min amount is above some threshold we think is reasonable for covering gas
 //   - verify resource is not already paid for (next version)
-func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte) (*types.PaymentVerifyResponse, error) {
+func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte, client *ethclient.Client) (*types.PaymentVerifyResponse, error) {
 	// Step 1: Payload format
 	var evmPayload evm.EVMPayload
 	if err := json.Unmarshal(raw, &evmPayload); err != nil {
@@ -220,7 +307,7 @@ func (t *EVMFacilitator) verifyEIP3009(ctx context.Context, payload *types.Payme
 	// Step 7: TODO: Nonce freshness check (optional in v1)
 
 	// Step 8: Check ERC20 balance
-	contract, err := eip3009.NewEip3009(domainConfig.VerifyingContract, t.client)
+	contract, err := eip3009.NewEip3009(domainConfig.VerifyingContract, client)
 	if err != nil {
 		return nil, fmt.Errorf("contract bind failed: %w", err)
 	}
@@ -288,7 +375,19 @@ func (t *EVMFacilitator) settleEIP3009(ctx context.Context, payload *types.Payme
 			Network:     network,
 		}, nil
 	}
-	contract, err := eip3009.NewEip3009(domainConfig.VerifyingContract, t.client)
+	client, _, err := dialEVMEndpoint(ctx, t.network, t.activeEVMEndpoint())
+	if err != nil {
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrTransactionFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
+	}
+	defer client.Close()
+
+	contract, err := eip3009.NewEip3009(domainConfig.VerifyingContract, client)
 	if err != nil {
 		return &types.PaymentSettleResponse{
 			Success:      false,
@@ -354,7 +453,7 @@ func (t *EVMFacilitator) settleEIP3009(ctx context.Context, payload *types.Payme
 //   - ✅ verify token matches requirement asset
 //   - ✅ verify EIP-712 signature
 //   - ✅ verify client has enough balance
-func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte) (*types.PaymentVerifyResponse, error) {
+func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements, raw []byte, client *ethclient.Client) (*types.PaymentVerifyResponse, error) {
 	// Step 1: Parse Permit2 payload
 	var permit2Payload evm.Permit2Payload
 	if err := json.Unmarshal(raw, &permit2Payload); err != nil {
@@ -504,7 +603,7 @@ func (t *EVMFacilitator) verifyPermit2(ctx context.Context, payload *types.Payme
 
 	// Step 11: Check ERC20 balance
 	// Bind to the token contract for balanceOf (not the proxy)
-	tokenContract, err := permit2.NewPermit2(auth.Permitted.Token, t.client)
+	tokenContract, err := permit2.NewPermit2(auth.Permitted.Token, client)
 	if err != nil {
 		return nil, fmt.Errorf("token contract bind failed: %w", err)
 	}
@@ -560,7 +659,19 @@ func (t *EVMFacilitator) settlePermit2(ctx context.Context, payload *types.Payme
 	}
 
 	// Bind to x402ExactPermit2Proxy contract
-	proxyContract, err := permit2.NewPermit2(evm.X402ExactPermit2ProxyAddress, t.client)
+	client, _, err := dialEVMEndpoint(ctx, t.network, t.activeEVMEndpoint())
+	if err != nil {
+		return &types.PaymentSettleResponse{
+			Success:      false,
+			ErrorReason:  types.ErrTransactionFailed.Error(),
+			ErrorMessage: err.Error(),
+			Payer:        payer,
+			Network:      network,
+		}, nil
+	}
+	defer client.Close()
+
+	proxyContract, err := permit2.NewPermit2(evm.X402ExactPermit2ProxyAddress, client)
 	if err != nil {
 		return &types.PaymentSettleResponse{
 			Success:      false,

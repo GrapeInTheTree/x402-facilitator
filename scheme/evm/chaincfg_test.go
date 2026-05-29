@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"math/big"
 	"strings"
 	"testing"
 
@@ -57,4 +58,36 @@ func TestGetDomainConfig(t *testing.T) {
 	t.Run("returns nil for unknown contract address on known chain", func(t *testing.T) {
 		require.Nil(t, GetDomainConfig(baseSepolia, "0x0000000000000000000000000000000000000000"))
 	})
+}
+
+func TestGetChainInfoIncludesDefaultPublicNodeEndpoints(t *testing.T) {
+	tests := []struct {
+		network     string
+		networkName string
+		chainID     int64
+		defaultURL  string
+	}{
+		{"eip155:1", "Ethereum Mainnet", 1, "https://ethereum-rpc.publicnode.com"},
+		{"eip155:11155111", "Ethereum Sepolia", 11155111, "https://ethereum-sepolia-rpc.publicnode.com"},
+		{"eip155:8453", "Base", 8453, "https://base-rpc.publicnode.com"},
+		{"eip155:84532", "Base Sepolia", 84532, "https://base-sepolia-rpc.publicnode.com"},
+		{"eip155:42161", "Arbitrum One", 42161, "https://arbitrum-one-rpc.publicnode.com"},
+		{"eip155:421614", "Arbitrum Sepolia", 421614, "https://arbitrum-sepolia-rpc.publicnode.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.network, func(t *testing.T) {
+			info := GetChainInfo(tt.network)
+			require.NotNil(t, info)
+			require.Equal(t, tt.networkName, info.NetworkName)
+			require.Equal(t, big.NewInt(tt.chainID), info.ChainID)
+			require.NotEmpty(t, info.DefaultURLs)
+			require.Equal(t, tt.defaultURL, info.DefaultURLs[0])
+			require.Equal(t, info.DefaultURLs, GetDefaultURLs(tt.network))
+			require.Equal(t, tt.networkName, GetNetworkName(tt.network))
+			require.Equal(t, tt.network, GetChainName(big.NewInt(tt.chainID)))
+			require.Equal(t, Permit2Address, GetContractAddress(tt.network, "permit2"))
+			require.Equal(t, X402ExactPermit2ProxyAddress, GetContractAddress(tt.network, "X402ExactPermit2Proxy"))
+		})
+	}
 }
