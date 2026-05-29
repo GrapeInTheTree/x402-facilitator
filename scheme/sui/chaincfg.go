@@ -6,11 +6,12 @@ import (
 )
 
 type NetworkInfo struct {
-	Network         string
-	NetworkName     string
-	NetworkID       string
-	DefaultURLs     []string
-	StablecoinTypes map[string]string
+	Network            string
+	NetworkName        string
+	NetworkID          string
+	DefaultURLs        []string
+	StablecoinTypes    map[string]string
+	StablecoinDecimals map[string]uint8
 }
 
 func GetNetworkInfo(network string) *NetworkInfo {
@@ -20,6 +21,7 @@ func GetNetworkInfo(network string) *NetworkInfo {
 	}
 	info.DefaultURLs = slices.Clone(info.DefaultURLs)
 	info.StablecoinTypes = maps.Clone(info.StablecoinTypes)
+	info.StablecoinDecimals = maps.Clone(info.StablecoinDecimals)
 	return &info
 }
 
@@ -88,6 +90,26 @@ func GetGaslessStablecoinType(network, asset string) (string, bool) {
 	return "", false
 }
 
+func GetGaslessStablecoinDecimals(network, asset string) (uint8, bool) {
+	info := GetNetworkInfo(network)
+	if info == nil {
+		return defaultGaslessStablecoinDecimals(asset)
+	}
+	for symbol, decimals := range info.StablecoinDecimals {
+		if NormalizeType(symbol) == NormalizeType(asset) {
+			return decimals, true
+		}
+	}
+	normalizedAsset := NormalizeType(asset)
+	for symbol, coinType := range info.StablecoinTypes {
+		if NormalizeType(coinType) == normalizedAsset {
+			decimals, ok := info.StablecoinDecimals[symbol]
+			return decimals, ok
+		}
+	}
+	return 0, false
+}
+
 func stablecoinTypeInMap(stablecoinTypes map[string]string, coinType string) (string, bool) {
 	normalizedCoinType := NormalizeType(coinType)
 	for symbol, candidate := range stablecoinTypes {
@@ -100,25 +122,28 @@ func stablecoinTypeInMap(stablecoinTypes map[string]string, coinType string) (st
 
 var networkInfo = map[string]NetworkInfo{
 	"sui:mainnet": {
-		Network:         "sui:mainnet",
-		NetworkName:     "Sui Mainnet",
-		NetworkID:       "mainnet",
-		DefaultURLs:     []string{"https://sui-rpc.publicnode.com", "https://fullnode.mainnet.sui.io:443"},
-		StablecoinTypes: defaultStablecoinTypesBySymbol(),
+		Network:            "sui:mainnet",
+		NetworkName:        "Sui Mainnet",
+		NetworkID:          "mainnet",
+		DefaultURLs:        []string{"https://sui-rpc.publicnode.com", "https://fullnode.mainnet.sui.io:443"},
+		StablecoinTypes:    defaultStablecoinTypesBySymbol(),
+		StablecoinDecimals: defaultStablecoinDecimalsBySymbol(),
 	},
 	"sui:testnet": {
-		Network:         "sui:testnet",
-		NetworkName:     "Sui Testnet",
-		NetworkID:       "testnet",
-		DefaultURLs:     []string{"https://sui-testnet-rpc.publicnode.com", "https://fullnode.testnet.sui.io:443"},
-		StablecoinTypes: defaultStablecoinTypesBySymbol(),
+		Network:            "sui:testnet",
+		NetworkName:        "Sui Testnet",
+		NetworkID:          "testnet",
+		DefaultURLs:        []string{"https://sui-testnet-rpc.publicnode.com", "https://fullnode.testnet.sui.io:443"},
+		StablecoinTypes:    defaultStablecoinTypesBySymbol(),
+		StablecoinDecimals: defaultStablecoinDecimalsBySymbol(),
 	},
 	"sui:localnet": {
-		Network:         "sui:localnet",
-		NetworkName:     "Sui Localnet",
-		NetworkID:       "localnet",
-		DefaultURLs:     []string{"http://127.0.0.1:9000"},
-		StablecoinTypes: defaultStablecoinTypesBySymbol(),
+		Network:            "sui:localnet",
+		NetworkName:        "Sui Localnet",
+		NetworkID:          "localnet",
+		DefaultURLs:        []string{"http://127.0.0.1:9000"},
+		StablecoinTypes:    defaultStablecoinTypesBySymbol(),
+		StablecoinDecimals: defaultStablecoinDecimalsBySymbol(),
 	},
 }
 
@@ -131,5 +156,33 @@ func defaultStablecoinTypesBySymbol() map[string]string {
 		"FDUSD":    FDUSDType,
 		"AUSD":     AUSDType,
 		"USDB":     USDBType,
+	}
+}
+
+func defaultGaslessStablecoinDecimals(asset string) (uint8, bool) {
+	normalizedAsset := NormalizeType(asset)
+	for symbol, decimals := range defaultStablecoinDecimalsBySymbol() {
+		if NormalizeType(symbol) == normalizedAsset {
+			return decimals, true
+		}
+	}
+	for symbol, coinType := range defaultStablecoinTypesBySymbol() {
+		if NormalizeType(coinType) == normalizedAsset {
+			decimals, ok := defaultStablecoinDecimalsBySymbol()[symbol]
+			return decimals, ok
+		}
+	}
+	return 0, false
+}
+
+func defaultStablecoinDecimalsBySymbol() map[string]uint8 {
+	return map[string]uint8{
+		"USDC":     6,
+		"USDSUI":   6,
+		"SUI_USDE": 6,
+		"USDY":     6,
+		"FDUSD":    6,
+		"AUSD":     6,
+		"USDB":     6,
 	}
 }

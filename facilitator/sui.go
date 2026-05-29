@@ -26,9 +26,19 @@ type SuiFacilitator struct {
 	client              *suiRPCClient
 	gaslessStablecoins  map[string]struct{}
 	gaslessStableAssets []string
+	minTransferAmounts  map[string]*big.Int
+}
+
+type SuiFacilitatorOptions struct {
+	GaslessStablecoinTypes []string
+	MinTransferAmounts     map[string]string
 }
 
 func NewSuiFacilitator(network string, url string, privateKeyHex string) (*SuiFacilitator, error) {
+	return NewSuiFacilitatorWithOptions(network, url, privateKeyHex, SuiFacilitatorOptions{})
+}
+
+func NewSuiFacilitatorWithOptions(network string, url string, privateKeyHex string, opts SuiFacilitatorOptions) (*SuiFacilitator, error) {
 	if !strings.HasPrefix(network, "sui:") {
 		return nil, fmt.Errorf("unsupported Sui network %q", network)
 	}
@@ -36,33 +46,69 @@ func NewSuiFacilitator(network string, url string, privateKeyHex string) (*SuiFa
 	if networkInfo == nil {
 		return nil, fmt.Errorf("unsupported Sui network %q", network)
 	}
-	dialCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	url, err := selectSuiEndpoint(dialCtx, url, networkInfo.DefaultURLs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Sui endpoints: %w", err)
-	}
+	client := newSuiRPCClientWithEndpoints(url, networkInfo.DefaultURLs)
 
 	assets := suischeme.GetGaslessStablecoinTypes(network)
-	allowlist := make(map[string]struct{}, len(assets))
-	for _, asset := range assets {
-		allowlist[suischeme.NormalizeType(asset)] = struct{}{}
+	if opts.GaslessStablecoinTypes != nil {
+		assets = append([]string(nil), opts.GaslessStablecoinTypes...)
+	}
+
+	assets, allowlist := gaslessStablecoinAllowlist(assets)
+	minTransferAmounts, err := gaslessStablecoinMinTransferAmounts(network, assets, opts.MinTransferAmounts)
+	if err != nil {
+		return nil, err
 	}
 
 	return &SuiFacilitator{
 		scheme:              types.Exact,
 		network:             network,
-		client:              newSuiRPCClientWithEndpoints(url, networkInfo.DefaultURLs),
+		client:              client,
 		gaslessStablecoins:  allowlist,
 		gaslessStableAssets: assets,
+		minTransferAmounts:  minTransferAmounts,
 	}, nil
 }
 
-func selectSuiEndpoint(ctx context.Context, priorityURL string, defaultURLs []string) (string, error) {
-	candidates := utils.EndpointCandidates(priorityURL, defaultURLs)
-	return utils.SelectEndpoint(ctx, candidates, func(ctx context.Context, endpoint string) error {
-		return newSuiRPCClient(endpoint).ping(ctx)
-	})
+func gaslessStablecoinAllowlist(assets []string) ([]string, map[string]struct{}) {
+	allowlist := make(map[string]struct{}, len(assets))
+	ordered := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		asset = strings.TrimSpace(asset)
+		if asset == "" {
+			continue
+		}
+		normalized := suischeme.NormalizeType(asset)
+		if _, ok := allowlist[normalized]; ok {
+			continue
+		}
+		allowlist[normalized] = struct{}{}
+		ordered = append(ordered, asset)
+	}
+	return ordered, allowlist
+}
+
+func gaslessStablecoinMinTransferAmounts(network string, assets []string, overrides map[string]string) (map[string]*big.Int, error) {
+	minAmounts := make(map[string]*big.Int, len(assets))
+	for _, asset := range assets {
+		if decimals, ok := suischeme.GetGaslessStablecoinDecimals(network, asset); ok {
+			minAmounts[suischeme.NormalizeType(asset)] = suischeme.MinimumGaslessStablecoinAmount(decimals)
+		}
+	}
+	for asset, rawAmount := range overrides {
+		amount, ok := new(big.Int).SetString(strings.TrimSpace(rawAmount), 10)
+		if !ok || amount.Sign() < 0 {
+			return nil, fmt.Errorf("invalid minimum transfer amount for %s: %s", asset, rawAmount)
+		}
+		setGaslessStablecoinMinTransferAmount(network, minAmounts, asset, amount)
+	}
+	return minAmounts, nil
+}
+
+func setGaslessStablecoinMinTransferAmount(network string, minAmounts map[string]*big.Int, asset string, amount *big.Int) {
+	minAmounts[suischeme.NormalizeType(asset)] = new(big.Int).Set(amount)
+	if coinType, ok := suischeme.GetGaslessStablecoinType(network, asset); ok {
+		minAmounts[suischeme.NormalizeType(coinType)] = new(big.Int).Set(amount)
+	}
 }
 
 func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPayload, req *types.PaymentRequirements) (*types.PaymentVerifyResponse, error) {
@@ -73,7 +119,7 @@ func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 
-	suiPayload, payer, err := parseAndVerifySuiPayload(payload.Payload)
+	parsed, err := parseAndVerifySuiPayload(payload.Payload)
 	if err != nil {
 		return &types.PaymentVerifyResponse{
 			IsValid:        false,
@@ -81,8 +127,16 @@ func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 			InvalidMessage: err.Error(),
 		}, nil
 	}
+	if suischeme.NormalizeAddress(parsed.Payer) != suischeme.NormalizeAddress(parsed.Sender) {
+		return &types.PaymentVerifyResponse{
+			IsValid:        false,
+			InvalidReason:  types.ErrInvalidSignature.Error(),
+			InvalidMessage: fmt.Sprintf("signature payer %s does not match transaction sender %s", parsed.Payer, parsed.Sender),
+			Payer:          parsed.Payer,
+		}, nil
+	}
 
-	if invalid := t.validatePaymentEnvelope(payload, req, payer); invalid != nil {
+	if invalid := t.validatePaymentEnvelope(payload, req, parsed.Payer); invalid != nil {
 		return invalid, nil
 	}
 
@@ -91,44 +145,52 @@ func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 		return &types.PaymentVerifyResponse{
 			IsValid:       false,
 			InvalidReason: types.ErrAmountMismatch.Error(),
-			Payer:         payer,
+			Payer:         parsed.Payer,
+		}, nil
+	}
+	if minAmount, ok := t.minTransferAmount(req.Asset); ok && reqAmount.Cmp(minAmount) < 0 {
+		return &types.PaymentVerifyResponse{
+			IsValid:        false,
+			InvalidReason:  types.ErrAmountMismatch.Error(),
+			InvalidMessage: fmt.Sprintf("amount %s is below minimum %s for %s", reqAmount.String(), minAmount.String(), req.Asset),
+			Payer:          parsed.Payer,
 		}, nil
 	}
 
-	dryRun, err := t.client.dryRunTransactionBlock(ctx, suiPayload.Transaction)
+	dryRun, err := t.client.dryRunTransactionBlock(ctx, parsed.Payload.Transaction)
 	if err != nil {
 		return nil, fmt.Errorf("dry run transaction failed: %w", err)
 	}
-	if !dryRun.success() {
+	if !dryRun.Success() {
 		return &types.PaymentVerifyResponse{
 			IsValid:        false,
 			InvalidReason:  types.ErrTransactionFailed.Error(),
-			InvalidMessage: dryRun.statusError(),
-			Payer:          payer,
+			InvalidMessage: dryRun.StatusError(),
+			Payer:          parsed.Payer,
 		}, nil
 	}
-	if !dryRun.gasless() {
+	if err := dryRun.ValidateGaslessStablecoinPayment(req.Asset); err != nil {
 		return &types.PaymentVerifyResponse{
 			IsValid:        false,
 			InvalidReason:  types.ErrInvalidTransaction.Error(),
-			InvalidMessage: "transaction is not gasless",
-			Payer:          payer,
+			InvalidMessage: err.Error(),
+			Payer:          parsed.Payer,
 		}, nil
 	}
 
-	received := dryRun.balanceDelta(req.PayTo, req.Asset)
+	received := dryRun.BalanceDelta(req.PayTo, req.Asset)
 	if received.Cmp(reqAmount) != 0 {
 		return &types.PaymentVerifyResponse{
 			IsValid:        false,
 			InvalidReason:  types.ErrAmountMismatch.Error(),
 			InvalidMessage: fmt.Sprintf("expected payTo balance delta %s, got %s", reqAmount.String(), received.String()),
-			Payer:          payer,
+			Payer:          parsed.Payer,
 		}, nil
 	}
 
 	return &types.PaymentVerifyResponse{
 		IsValid: true,
-		Payer:   payer,
+		Payer:   parsed.Payer,
 	}, nil
 }
 
@@ -152,19 +214,22 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 
-	suiPayload, err := suischeme.PayloadFromMap(payload.Payload)
+	parsed, err := parseAndVerifySuiPayload(payload.Payload)
 	if err != nil {
 		return &types.PaymentSettleResponse{
 			Success:      false,
-			ErrorReason:  types.ErrInvalidPayloadFormat.Error(),
+			ErrorReason:  invalidPayloadReason(err),
 			ErrorMessage: err.Error(),
 			Payer:        verified.Payer,
 			Network:      network,
 		}, nil
 	}
 
-	executed, err := t.client.executeTransactionBlock(ctx, suiPayload.Transaction, []string{suiPayload.Signature})
+	executed, err := t.client.executeTransactionBlock(ctx, parsed.Payload.Transaction, []string{parsed.Payload.Signature})
 	if err != nil {
+		if settled, lookupErr := t.settledTransactionResponse(ctx, parsed.TransactionDigest, req, verified.Payer, network); lookupErr == nil && settled != nil {
+			return settled, nil
+		}
 		return &types.PaymentSettleResponse{
 			Success:      false,
 			ErrorReason:  types.ErrTransactionFailed.Error(),
@@ -173,13 +238,17 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 			Network:      network,
 		}, nil
 	}
-	if !executed.success() {
+	transactionDigest := executed.Digest.String()
+	if transactionDigest == "" {
+		transactionDigest = parsed.TransactionDigest
+	}
+	if !executed.IsSuccess() {
 		return &types.PaymentSettleResponse{
 			Success:      false,
 			ErrorReason:  types.ErrTransactionFailed.Error(),
-			ErrorMessage: executed.statusError(),
+			ErrorMessage: suischeme.TransactionResultStatusError(executed, "transaction failed"),
 			Payer:        verified.Payer,
-			Transaction:  executed.Digest,
+			Transaction:  transactionDigest,
 			Network:      network,
 		}, nil
 	}
@@ -187,7 +256,7 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 	return &types.PaymentSettleResponse{
 		Success:     true,
 		Payer:       verified.Payer,
-		Transaction: executed.Digest,
+		Transaction: transactionDigest,
 		Network:     network,
 	}, nil
 }
@@ -246,7 +315,7 @@ func (t *SuiFacilitator) validatePaymentEnvelope(payload *types.PaymentPayload, 
 			Payer:         payer,
 		}
 	}
-	if normalizeSuiAddress(payload.Accepted.PayTo) != normalizeSuiAddress(req.PayTo) {
+	if suischeme.NormalizeAddress(payload.Accepted.PayTo) != suischeme.NormalizeAddress(req.PayTo) {
 		return &types.PaymentVerifyResponse{
 			IsValid:       false,
 			InvalidReason: types.ErrRecipientMismatch.Error(),
@@ -268,22 +337,81 @@ func (t *SuiFacilitator) isGaslessStablecoin(asset string) bool {
 	return ok
 }
 
-func parseAndVerifySuiPayload(payload map[string]interface{}) (*suischeme.Payload, string, error) {
+func (t *SuiFacilitator) minTransferAmount(asset string) (*big.Int, bool) {
+	if t == nil {
+		return nil, false
+	}
+	minAmount, ok := t.minTransferAmounts[suischeme.NormalizeType(asset)]
+	if !ok {
+		return nil, false
+	}
+	return new(big.Int).Set(minAmount), true
+}
+
+func (t *SuiFacilitator) settledTransactionResponse(ctx context.Context, digest string, req *types.PaymentRequirements, payer string, network types.Network) (*types.PaymentSettleResponse, error) {
+	if strings.TrimSpace(digest) == "" {
+		return nil, errors.New("empty transaction digest")
+	}
+	executed, err := t.client.getTransactionBlock(ctx, digest)
+	if err != nil {
+		return nil, err
+	}
+	if !executed.IsSuccess() {
+		return nil, fmt.Errorf("transaction %s is not successful: %s", digest, suischeme.TransactionResultStatusError(executed, "transaction failed"))
+	}
+	reqAmount, ok := new(big.Int).SetString(req.Amount, 10)
+	if !ok || reqAmount.Sign() <= 0 {
+		return nil, fmt.Errorf("invalid amount: %s", req.Amount)
+	}
+	received := suischeme.TransactionResultBalanceDelta(executed, req.PayTo, req.Asset)
+	if received.Cmp(reqAmount) != 0 {
+		return nil, fmt.Errorf("settled transaction %s balance delta mismatch: expected %s, got %s", digest, reqAmount.String(), received.String())
+	}
+
+	return &types.PaymentSettleResponse{
+		Success:     true,
+		Payer:       payer,
+		Transaction: digest,
+		Network:     network,
+	}, nil
+}
+
+type verifiedSuiPayload struct {
+	Payload           *suischeme.Payload
+	Payer             string
+	Sender            string
+	TransactionDigest string
+}
+
+func parseAndVerifySuiPayload(payload map[string]interface{}) (*verifiedSuiPayload, error) {
 	suiPayload, err := suischeme.PayloadFromMap(payload)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	txBytes, err := suiPayload.DecodeTransaction()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	payer, err := suischeme.VerifySignature(suiPayload.Signature, txBytes)
 	if err != nil {
-		return nil, "", err
+		return nil, err
+	}
+	sender, err := suischeme.TransactionSender(txBytes)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := suischeme.TransactionDigest(txBytes)
+	if err != nil {
+		return nil, err
 	}
 
-	return suiPayload, payer, nil
+	return &verifiedSuiPayload{
+		Payload:           suiPayload,
+		Payer:             payer,
+		Sender:            sender,
+		TransactionDigest: digest,
+	}, nil
 }
 
 func invalidPayloadReason(err error) string {
@@ -302,17 +430,14 @@ type suiRPCClient struct {
 	httpClient *http.Client
 }
 
-func newSuiRPCClient(url string) *suiRPCClient {
-	return newSuiRPCClientWithEndpoints(url, []string{url})
-}
-
 func newSuiRPCClientWithEndpoints(url string, endpoints []string) *suiRPCClient {
-	candidates := utils.EndpointCandidates(url, endpoints)
-	if len(candidates) == 0 {
-		candidates = []string{strings.TrimSpace(url)}
+	candidates := utils.EndpointCandidates(append([]string{url}, endpoints...))
+	activeURL := ""
+	if len(candidates) > 0 {
+		activeURL = candidates[0]
 	}
 	return &suiRPCClient{
-		url:       candidates[0],
+		url:       activeURL,
 		endpoints: candidates,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -320,31 +445,40 @@ func newSuiRPCClientWithEndpoints(url string, endpoints []string) *suiRPCClient 
 	}
 }
 
-func (c *suiRPCClient) dryRunTransactionBlock(ctx context.Context, txBytesBase64 string) (*dryRunTransactionBlockResponse, error) {
-	var result dryRunTransactionBlockResponse
+func (c *suiRPCClient) dryRunTransactionBlock(ctx context.Context, txBytesBase64 string) (*suischeme.DryRunTransactionBlock, error) {
+	var result suischeme.DryRunTransactionBlock
 	if err := c.call(ctx, "sui_dryRunTransactionBlock", []interface{}{txBytesBase64}, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (c *suiRPCClient) executeTransactionBlock(ctx context.Context, txBytesBase64 string, signatures []string) (*executeTransactionBlockResponse, error) {
+func (c *suiRPCClient) executeTransactionBlock(ctx context.Context, txBytesBase64 string, signatures []string) (*suischeme.ExecuteTransactionBlock, error) {
 	options := map[string]bool{
 		"showEffects":        true,
 		"showBalanceChanges": true,
 	}
 	params := []interface{}{txBytesBase64, signatures, options, "WaitForLocalExecution"}
 
-	var result executeTransactionBlockResponse
+	var result suischeme.ExecuteTransactionBlock
 	if err := c.call(ctx, "sui_executeTransactionBlock", params, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (c *suiRPCClient) ping(ctx context.Context) error {
-	var result string
-	return c.call(ctx, "sui_getLatestCheckpointSequenceNumber", []interface{}{}, &result)
+func (c *suiRPCClient) getTransactionBlock(ctx context.Context, digest string) (*suischeme.ExecuteTransactionBlock, error) {
+	options := map[string]bool{
+		"showEffects":        true,
+		"showBalanceChanges": true,
+	}
+	params := []interface{}{digest, options}
+
+	var result suischeme.ExecuteTransactionBlock
+	if err := c.call(ctx, "sui_getTransactionBlock", params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (c *suiRPCClient) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
@@ -362,14 +496,14 @@ func (c *suiRPCClient) call(ctx context.Context, method string, params []interfa
 func (c *suiRPCClient) endpointCandidates() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return utils.EndpointCandidates(c.url, c.endpoints)
+	return utils.EndpointCandidates(append([]string{c.url}, c.endpoints...))
 }
 
 func (c *suiRPCClient) setActiveEndpoint(endpoint string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.url = endpoint
-	c.endpoints = utils.EndpointCandidates(endpoint, c.endpoints)
+	c.endpoints = utils.EndpointCandidates(append([]string{endpoint}, c.endpoints...))
 }
 
 func (c *suiRPCClient) callEndpoint(ctx context.Context, endpoint string, method string, params []interface{}, result interface{}) error {
@@ -445,135 +579,4 @@ func (e *suiRPCError) Error() string {
 		return fmt.Sprintf("sui rpc error %d: %s", e.Code, e.Message)
 	}
 	return fmt.Sprintf("sui rpc error %d: %s: %s", e.Code, e.Message, string(e.Data))
-}
-
-type dryRunTransactionBlockResponse struct {
-	Input          suiTransactionBlockData `json:"input"`
-	Effects        suiEffects              `json:"effects"`
-	BalanceChanges []suiBalanceChange      `json:"balanceChanges"`
-}
-
-func (r *dryRunTransactionBlockResponse) success() bool {
-	return strings.EqualFold(r.Effects.Status.Status, "success")
-}
-
-func (r *dryRunTransactionBlockResponse) statusError() string {
-	if r.Effects.Status.Error != "" {
-		return r.Effects.Status.Error
-	}
-	if r.Effects.Status.Status != "" {
-		return r.Effects.Status.Status
-	}
-	return "dry run failed"
-}
-
-func (r *dryRunTransactionBlockResponse) gasless() bool {
-	return len(r.Input.GasData.Payment) == 0 &&
-		r.Input.GasData.Price == "0" &&
-		r.Input.GasData.Budget == "0"
-}
-
-func (r *dryRunTransactionBlockResponse) balanceDelta(owner string, coinType string) *big.Int {
-	total := new(big.Int)
-	normalizedOwner := normalizeSuiAddress(owner)
-	normalizedCoinType := suischeme.NormalizeType(coinType)
-
-	for _, change := range r.BalanceChanges {
-		if ownerAddress(change.Owner) != normalizedOwner {
-			continue
-		}
-		if suischeme.NormalizeType(change.CoinType) != normalizedCoinType {
-			continue
-		}
-
-		amount, ok := new(big.Int).SetString(change.Amount, 10)
-		if !ok {
-			continue
-		}
-		total.Add(total, amount)
-	}
-
-	return total
-}
-
-type executeTransactionBlockResponse struct {
-	Digest  string     `json:"digest"`
-	Effects suiEffects `json:"effects"`
-}
-
-func (r *executeTransactionBlockResponse) success() bool {
-	return strings.EqualFold(r.Effects.Status.Status, "success")
-}
-
-func (r *executeTransactionBlockResponse) statusError() string {
-	if r.Effects.Status.Error != "" {
-		return r.Effects.Status.Error
-	}
-	if r.Effects.Status.Status != "" {
-		return r.Effects.Status.Status
-	}
-	return "transaction failed"
-}
-
-type suiEffects struct {
-	Status suiExecutionStatus `json:"status"`
-}
-
-type suiTransactionBlockData struct {
-	GasData suiGasData `json:"gasData"`
-}
-
-type suiGasData struct {
-	Payment []json.RawMessage `json:"payment"`
-	Price   string            `json:"price"`
-	Budget  string            `json:"budget"`
-}
-
-type suiExecutionStatus struct {
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
-
-type suiBalanceChange struct {
-	Owner    json.RawMessage `json:"owner"`
-	CoinType string          `json:"coinType"`
-	Amount   string          `json:"amount"`
-}
-
-func ownerAddress(raw json.RawMessage) string {
-	rawText := strings.TrimSpace(string(raw))
-	if rawText == "" || rawText == "null" {
-		return ""
-	}
-
-	var tagged map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &tagged); err == nil {
-		for _, key := range []string{"AddressOwner", "ObjectOwner"} {
-			if value, ok := tagged[key]; ok {
-				var address string
-				if err := json.Unmarshal(value, &address); err == nil {
-					return normalizeSuiAddress(address)
-				}
-			}
-		}
-	}
-
-	var address string
-	if err := json.Unmarshal(raw, &address); err == nil {
-		return normalizeSuiAddress(address)
-	}
-
-	return ""
-}
-
-func normalizeSuiAddress(address string) string {
-	address = strings.ToLower(strings.TrimSpace(address))
-	if address == "" || address == "0x" {
-		return ""
-	}
-	address = strings.TrimPrefix(address, "0x")
-	if len(address) < 64 {
-		address = strings.Repeat("0", 64-len(address)) + address
-	}
-	return "0x" + address
 }

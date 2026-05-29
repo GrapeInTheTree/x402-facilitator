@@ -1,11 +1,10 @@
-package types_test
+package types
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/gosuda/x402-facilitator/internal/sdk"
-	"github.com/gosuda/x402-facilitator/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +14,7 @@ import (
 // silently breaking /verify, /settle, and /supported.
 func TestV2WireCompatibility(t *testing.T) {
 	t.Run("PaymentRequirements", func(t *testing.T) {
-		local := types.PaymentRequirements{
+		local := PaymentRequirements{
 			Scheme:            "exact",
 			Network:           "eip155:84532",
 			Asset:             "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
@@ -31,8 +30,8 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 
 	t.Run("PaymentPayload", func(t *testing.T) {
-		local := types.PaymentPayload{
-			X402Version: int(types.X402VersionV2),
+		local := PaymentPayload{
+			X402Version: int(X402VersionV2),
 			Payload: map[string]interface{}{
 				"signature": "0xabc",
 				"authorization": map[string]interface{}{
@@ -44,7 +43,7 @@ func TestV2WireCompatibility(t *testing.T) {
 					"nonce":       "0x0000000000000000000000000000000000000000000000000000000000000001",
 				},
 			},
-			Accepted: types.PaymentRequirements{
+			Accepted: PaymentRequirements{
 				Scheme:            "exact",
 				Network:           "eip155:84532",
 				Asset:             "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
@@ -52,7 +51,7 @@ func TestV2WireCompatibility(t *testing.T) {
 				PayTo:             "0x2345678901234567890123456789012345678901",
 				MaxTimeoutSeconds: 300,
 			},
-			Resource: &types.ResourceInfo{
+			Resource: &ResourceInfo{
 				URL:         "https://example.com/api/data",
 				Description: "example resource",
 				MimeType:    "application/json",
@@ -67,8 +66,8 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 
 	t.Run("SupportedKind", func(t *testing.T) {
-		local := types.SupportedKind{
-			X402Version: int(types.X402VersionV2),
+		local := SupportedKind{
+			X402Version: int(X402VersionV2),
 			Scheme:      "exact",
 			Network:     "eip155:84532",
 			Extra: map[string]interface{}{
@@ -79,9 +78,9 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 
 	t.Run("SupportedResponse", func(t *testing.T) {
-		local := types.SupportedResponse{
-			Kinds: []types.SupportedKind{{
-				X402Version: int(types.X402VersionV2),
+		local := SupportedResponse{
+			Kinds: []SupportedKind{{
+				X402Version: int(X402VersionV2),
 				Scheme:      "exact",
 				Network:     "eip155:84532",
 			}},
@@ -94,7 +93,7 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 
 	t.Run("PaymentVerifyResponse", func(t *testing.T) {
-		local := types.PaymentVerifyResponse{
+		local := PaymentVerifyResponse{
 			IsValid:        false,
 			InvalidReason:  "insufficient_balance",
 			InvalidMessage: "payer balance is below the requested amount",
@@ -104,11 +103,11 @@ func TestV2WireCompatibility(t *testing.T) {
 	})
 
 	t.Run("PaymentSettleResponse", func(t *testing.T) {
-		local := types.PaymentSettleResponse{
+		local := PaymentSettleResponse{
 			Success:     true,
 			Payer:       "0x1234567890123456789012345678901234567890",
 			Transaction: "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-			Network:     types.Network("eip155:84532"),
+			Network:     Network("eip155:84532"),
 		}
 		assertWireCompat[sdk.SettleResponse](t, local)
 	})

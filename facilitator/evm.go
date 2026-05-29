@@ -70,7 +70,7 @@ func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFa
 		network:   network,
 		networkID: networkId,
 		endpoint:  selectedURL,
-		endpoints: utils.EndpointCandidates(selectedURL, defaultURLs),
+		endpoints: utils.EndpointCandidates(append([]string{selectedURL}, defaultURLs...)),
 
 		signer:  signer,
 		address: address,
@@ -78,7 +78,7 @@ func NewEVMFacilitator(network string, url string, privateKeyHex string) (*EVMFa
 }
 
 func selectEVMEndpoint(ctx context.Context, network string, priorityURL string, defaultURLs []string) (*big.Int, string, error) {
-	candidates := utils.EndpointCandidates(priorityURL, defaultURLs)
+	candidates := utils.EndpointCandidates(append([]string{priorityURL}, defaultURLs...))
 	var selectedNetworkID *big.Int
 	selectedURL, err := utils.SelectEndpoint(ctx, candidates, func(ctx context.Context, endpoint string) error {
 		client, networkID, err := dialEVMEndpoint(ctx, network, endpoint)
@@ -118,14 +118,14 @@ func dialEVMEndpoint(ctx context.Context, network string, endpoint string) (*eth
 func (t *EVMFacilitator) evmEndpointCandidates() []string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return utils.EndpointCandidates(t.endpoint, t.endpoints)
+	return utils.EndpointCandidates(append([]string{t.endpoint}, t.endpoints...))
 }
 
 func (t *EVMFacilitator) setActiveEVMEndpoint(endpoint string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.endpoint = endpoint
-	t.endpoints = utils.EndpointCandidates(endpoint, t.endpoints)
+	t.endpoints = utils.EndpointCandidates(append([]string{endpoint}, t.endpoints...))
 }
 
 func (t *EVMFacilitator) activeEVMEndpoint() string {

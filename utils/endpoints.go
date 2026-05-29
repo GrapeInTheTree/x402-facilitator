@@ -9,9 +9,9 @@ import (
 
 type EndpointOperation func(ctx context.Context, endpoint string) error
 
-func EndpointCandidates(priorityEndpoint string, fallbackEndpoints []string) []string {
-	candidates := make([]string, 0, 1+len(fallbackEndpoints))
-	seen := make(map[string]struct{}, 1+len(fallbackEndpoints))
+func EndpointCandidates(endpoints []string) []string {
+	candidates := make([]string, 0, len(endpoints))
+	seen := make(map[string]struct{}, len(endpoints))
 
 	appendEndpoint := func(endpoint string) {
 		endpoint = strings.TrimSpace(endpoint)
@@ -26,8 +26,7 @@ func EndpointCandidates(priorityEndpoint string, fallbackEndpoints []string) []s
 		candidates = append(candidates, endpoint)
 	}
 
-	appendEndpoint(priorityEndpoint)
-	for _, endpoint := range fallbackEndpoints {
+	for _, endpoint := range endpoints {
 		appendEndpoint(endpoint)
 	}
 

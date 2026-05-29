@@ -7,19 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 
-	"golang.org/x/crypto/blake2b"
+	suiintent "github.com/open-move/sui-go-sdk/cryptography/intent"
+	suitxcrypto "github.com/open-move/sui-go-sdk/cryptography/transaction"
+	"github.com/open-move/sui-go-sdk/keychain"
+	suiutils "github.com/open-move/sui-go-sdk/utils"
 )
 
 const (
 	// Ed25519 signature scheme flag used by Sui's serialized signature format.
 	SignatureSchemeEd25519 byte = 0x00
-
-	intentScopeTransactionData byte = 0x00
-	intentVersionV0            byte = 0x00
-	intentAppIDSui             byte = 0x00
 
 	// USDCType is the canonical native USDC type currently supported by Sui's
 	// gasless stablecoin transfer flow.
@@ -175,11 +173,12 @@ func (s *Ed25519Signer) SignTransaction(txBytes []byte) (string, error) {
 		return "", ErrEmptyTransaction
 	}
 
-	signature := ed25519.Sign(s.privateKey, TransactionIntentDigest(txBytes))
-	serialized := make([]byte, 1+ed25519.SignatureSize+ed25519.PublicKeySize)
-	serialized[0] = SignatureSchemeEd25519
-	copy(serialized[1:], signature)
-	copy(serialized[1+ed25519.SignatureSize:], s.publicKey)
+	serialized, err := suitxcrypto.Sign(keychain.SchemeEd25519, txBytes, s.publicKey, func(digest []byte) ([]byte, error) {
+		return ed25519.Sign(s.privateKey, digest), nil
+	})
+	if err != nil {
+		return "", err
+	}
 
 	return base64.StdEncoding.EncodeToString(serialized), nil
 }
@@ -221,31 +220,35 @@ func VerifySignature(signature string, txBytes []byte) (string, error) {
 }
 
 func TransactionIntentDigest(txBytes []byte) []byte {
-	if len(txBytes) > math.MaxInt-3 {
-		panic("transaction bytes too large")
+	digest, err := suiintent.HashIntentBytes(suiintent.IntentScopeTransactionData, txBytes)
+	if err != nil {
+		panic(err)
 	}
-	intentMessage := make([]byte, 0, 3+len(txBytes))
-	intentMessage = append(intentMessage, intentScopeTransactionData, intentVersionV0, intentAppIDSui)
-	intentMessage = append(intentMessage, txBytes...)
-
-	digest := blake2b.Sum256(intentMessage)
 	return digest[:]
 }
 
 func AddressFromPublicKey(signatureScheme byte, publicKey []byte) string {
-	if len(publicKey) > math.MaxInt-1 {
-		panic("public key too large")
+	scheme, err := keychain.SchemeFromFlag(signatureScheme)
+	if err != nil {
+		return ""
 	}
-	material := make([]byte, 0, 1+len(publicKey))
-	material = append(material, signatureScheme)
-	material = append(material, publicKey...)
-
-	digest := blake2b.Sum256(material)
-	return "0x" + hex.EncodeToString(digest[:])
+	address, err := keychain.AddressFromPublicKey(scheme, publicKey)
+	if err != nil {
+		return ""
+	}
+	return address
 }
 
 func NormalizeType(asset string) string {
 	return strings.ToLower(strings.TrimSpace(asset))
+}
+
+func NormalizeAddress(address string) string {
+	normalized, err := suiutils.NormalizeAddress(address)
+	if err != nil {
+		return ""
+	}
+	return normalized
 }
 
 func IsDefaultGaslessStablecoinType(asset string) bool {
