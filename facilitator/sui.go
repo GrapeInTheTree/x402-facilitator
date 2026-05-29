@@ -36,7 +36,9 @@ func NewSuiFacilitator(network string, url string, privateKeyHex string) (*SuiFa
 	if networkInfo == nil {
 		return nil, fmt.Errorf("unsupported Sui network %q", network)
 	}
-	url, err := selectSuiEndpoint(context.Background(), url, networkInfo.DefaultURLs)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	url, err := selectSuiEndpoint(dialCtx, url, networkInfo.DefaultURLs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Sui endpoints: %w", err)
 	}
@@ -95,12 +97,7 @@ func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 
 	dryRun, err := t.client.dryRunTransactionBlock(ctx, suiPayload.Transaction)
 	if err != nil {
-		return &types.PaymentVerifyResponse{
-			IsValid:        false,
-			InvalidReason:  types.ErrInvalidTransaction.Error(),
-			InvalidMessage: err.Error(),
-			Payer:          payer,
-		}, nil
+		return nil, fmt.Errorf("dry run transaction failed: %w", err)
 	}
 	if !dryRun.success() {
 		return &types.PaymentVerifyResponse{
@@ -544,6 +541,11 @@ type suiBalanceChange struct {
 }
 
 func ownerAddress(raw json.RawMessage) string {
+	rawText := strings.TrimSpace(string(raw))
+	if rawText == "" || rawText == "null" {
+		return ""
+	}
+
 	var tagged map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &tagged); err == nil {
 		for _, key := range []string{"AddressOwner", "ObjectOwner"} {
@@ -566,6 +568,9 @@ func ownerAddress(raw json.RawMessage) string {
 
 func normalizeSuiAddress(address string) string {
 	address = strings.ToLower(strings.TrimSpace(address))
+	if address == "" || address == "0x" {
+		return ""
+	}
 	address = strings.TrimPrefix(address, "0x")
 	if len(address) < 64 {
 		address = strings.Repeat("0", 64-len(address)) + address

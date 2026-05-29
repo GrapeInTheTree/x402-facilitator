@@ -269,6 +269,43 @@ func TestSuiVerifyFallsBackPerRequest(t *testing.T) {
 	require.Equal(t, goodServer.URL, facilitator.client.url)
 }
 
+func TestSuiVerifyReturnsErrorOnDryRunRPCFailure(t *testing.T) {
+	signer := newSuiTestSigner(t)
+	suiPayload := newSuiTestPayload(t, signer)
+	req := newSuiPaymentRequirements()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary endpoint failure", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	facilitator := &SuiFacilitator{
+		scheme:  types.Exact,
+		network: suiTestNetwork,
+		client:  newSuiRPCClientWithEndpoints(server.URL, []string{server.URL}),
+		gaslessStablecoins: map[string]struct{}{
+			suischeme.NormalizeType(suischeme.USDCType): {},
+		},
+		gaslessStableAssets: []string{suischeme.USDCType},
+	}
+	payment := &types.PaymentPayload{
+		X402Version: int(types.X402VersionV2),
+		Payload:     suiPayloadMap(t, suiPayload),
+		Accepted:    *req,
+	}
+
+	verified, err := facilitator.Verify(t.Context(), payment, req)
+	require.Nil(t, verified)
+	require.ErrorContains(t, err, "dry run transaction failed")
+}
+
+func TestSuiAddressHelpersRejectEmptyInputs(t *testing.T) {
+	require.Empty(t, normalizeSuiAddress(""))
+	require.Empty(t, normalizeSuiAddress("0x"))
+	require.Empty(t, ownerAddress(nil))
+	require.Empty(t, ownerAddress(json.RawMessage("null")))
+}
+
 func newSuiTestSigner(t *testing.T) *suischeme.Ed25519Signer {
 	t.Helper()
 

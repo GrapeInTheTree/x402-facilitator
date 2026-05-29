@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"golang.org/x/crypto/blake2b"
@@ -32,7 +33,8 @@ const (
 )
 
 var (
-	ErrEmptyTransaction     = errors.New("empty_transaction")
+	ErrEmptyTransaction = errors.New("empty_transaction")
+
 	ErrEmptySignature       = errors.New("empty_signature")
 	ErrInvalidSignature     = errors.New("invalid_signature")
 	ErrUnsupportedSignature = errors.New("unsupported_signature_scheme")
@@ -219,6 +221,9 @@ func VerifySignature(signature string, txBytes []byte) (string, error) {
 }
 
 func TransactionIntentDigest(txBytes []byte) []byte {
+	if len(txBytes) > math.MaxInt-3 {
+		panic("transaction bytes too large")
+	}
 	intentMessage := make([]byte, 0, 3+len(txBytes))
 	intentMessage = append(intentMessage, intentScopeTransactionData, intentVersionV0, intentAppIDSui)
 	intentMessage = append(intentMessage, txBytes...)
@@ -228,6 +233,9 @@ func TransactionIntentDigest(txBytes []byte) []byte {
 }
 
 func AddressFromPublicKey(signatureScheme byte, publicKey []byte) string {
+	if len(publicKey) > math.MaxInt-1 {
+		panic("public key too large")
+	}
 	material := make([]byte, 0, 1+len(publicKey))
 	material = append(material, signatureScheme)
 	material = append(material, publicKey...)

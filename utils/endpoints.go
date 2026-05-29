@@ -48,6 +48,9 @@ func DoWithEndpoint(ctx context.Context, candidates []string, operation Endpoint
 
 	failures := make([]string, 0, len(candidates))
 	for _, endpoint := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		endpoint = strings.TrimSpace(endpoint)
 		if endpoint == "" {
 			continue
@@ -55,6 +58,9 @@ func DoWithEndpoint(ctx context.Context, candidates []string, operation Endpoint
 		if err := operation(ctx, endpoint); err == nil {
 			return endpoint, nil
 		} else {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
 			failures = append(failures, fmt.Sprintf("%s: %v", endpoint, err))
 		}
 	}

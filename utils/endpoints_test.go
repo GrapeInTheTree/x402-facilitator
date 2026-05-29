@@ -79,3 +79,27 @@ func TestDoWithEndpointRunsOperationUntilSuccess(t *testing.T) {
 	require.Equal(t, "second", selected)
 	require.Equal(t, []string{"first", "second"}, attempted)
 }
+
+func TestDoWithEndpointStopsOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := utils.DoWithEndpoint(ctx, []string{"first", "second"}, func(ctx context.Context, endpoint string) error {
+		t.Fatalf("operation should not run after context cancellation")
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestDoWithEndpointStopsOnContextError(t *testing.T) {
+	attempted := 0
+
+	_, err := utils.DoWithEndpoint(context.Background(), []string{"first", "second"}, func(ctx context.Context, endpoint string) error {
+		attempted++
+		return context.DeadlineExceeded
+	})
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, 1, attempted)
+}
