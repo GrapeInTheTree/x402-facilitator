@@ -261,11 +261,12 @@ func TestSuiVerifyRejectsSignaturePayerSenderMismatch(t *testing.T) {
 	req := newSuiPaymentRequirements()
 
 	txBytes, err := suischeme.BuildGaslessStablecoinTransferTransaction(t.Context(), suischeme.GaslessStablecoinTransfer{
-		Sender:    sender.Address(),
-		Recipient: req.PayTo,
-		Network:   req.Network,
-		Asset:     req.Asset,
-		Amount:    req.Amount,
+		Sender:     sender.Address(),
+		Recipient:  req.PayTo,
+		Network:    req.Network,
+		Asset:      req.Asset,
+		Amount:     req.Amount,
+		Expiration: suiTestExpiration(t),
 	})
 	require.NoError(t, err)
 	suiPayload, err := suischeme.NewSignedPayload(txBytes, payer)
@@ -434,6 +435,13 @@ func newAltSuiTestSigner(t *testing.T) *suischeme.Ed25519Signer {
 	return signer
 }
 
+func suiTestExpiration(t *testing.T) *suischeme.TransactionExpiration {
+	t.Helper()
+	expiration, err := suischeme.TransactionExpirationValidDuring("4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S", 1142, 1143, 7)
+	require.NoError(t, err)
+	return expiration
+}
+
 func newSuiTestPayload(t *testing.T, signer suischeme.Signer) *suischeme.Payload {
 	return newSuiTestPayloadWithAmount(t, signer, suiTestAmount)
 }
@@ -442,11 +450,12 @@ func newSuiTestPayloadWithAmount(t *testing.T, signer suischeme.Signer, amount s
 	t.Helper()
 
 	txBytes, err := suischeme.BuildGaslessStablecoinTransferTransaction(t.Context(), suischeme.GaslessStablecoinTransfer{
-		Sender:    signer.Address(),
-		Recipient: suiTestPayTo,
-		Network:   suiTestNetwork,
-		Asset:     suischeme.USDCType,
-		Amount:    amount,
+		Sender:     signer.Address(),
+		Recipient:  suiTestPayTo,
+		Network:    suiTestNetwork,
+		Asset:      suischeme.USDCType,
+		Amount:     amount,
+		Expiration: suiTestExpiration(t),
 	})
 	require.NoError(t, err)
 

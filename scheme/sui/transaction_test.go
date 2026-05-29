@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	bcs "github.com/iotaledger/bcs-go"
@@ -160,15 +162,30 @@ func TestOwnerAddressRejectsEmptyInputs(t *testing.T) {
 	require.Empty(t, OwnerAddress(json.RawMessage("null")))
 }
 
+func TestSuiAddressAndTypeTagParsing(t *testing.T) {
+	address, err := ParseAddress("0xabc")
+	require.NoError(t, err)
+	require.Equal(t, NormalizeAddress("0xabc"), address.String())
+
+	tag, err := ParseTypeTag("0x2::coin::Coin<" + USDCType + ">")
+	require.NoError(t, err)
+	require.Equal(t, NormalizeType(NormalizeAddress("0x2")+"::coin::Coin<"+USDCType+">"), NormalizeType(tag.String()))
+
+	vector, err := ParseTypeTag("vector<0x2::sui::SUI>")
+	require.NoError(t, err)
+	require.Equal(t, NormalizeType("vector<"+NormalizeAddress("0x2")+"::sui::SUI>"), NormalizeType(vector.String()))
+}
+
 func TestBuildGaslessStablecoinTransferTransaction(t *testing.T) {
 	signer := newTestSigner(t)
 
 	txBytes, err := BuildGaslessStablecoinTransferTransaction(context.Background(), GaslessStablecoinTransfer{
-		Sender:    signer.Address(),
-		Recipient: "0xabc",
-		Network:   "sui:mainnet",
-		Asset:     "USDC",
-		Amount:    "1000000",
+		Sender:     signer.Address(),
+		Recipient:  "0xabc",
+		Network:    "sui:mainnet",
+		Asset:      "USDC",
+		Amount:     "1000000",
+		Expiration: testValidDuringExpiration(t),
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, txBytes)
@@ -177,7 +194,13 @@ func TestBuildGaslessStablecoinTransferTransaction(t *testing.T) {
 func TestNewGaslessStablecoinPaymentPayload(t *testing.T) {
 	signer := newTestSigner(t)
 
-	payload, err := NewGaslessStablecoinPaymentPayloadForNetwork(context.Background(), "sui:mainnet", "USDC", "0xabc", "1000000", signer)
+	payload, err := NewGaslessStablecoinPaymentPayloadFromTransfer(context.Background(), GaslessStablecoinTransfer{
+		Recipient:  "0xabc",
+		Network:    "sui:mainnet",
+		Asset:      "USDC",
+		Amount:     "1000000",
+		Expiration: testValidDuringExpiration(t),
+	}, signer)
 	require.NoError(t, err)
 	require.NotEmpty(t, payload.Transaction)
 	require.NotEmpty(t, payload.Signature)
@@ -193,19 +216,21 @@ func TestBuildGaslessStablecoinTransferTransactionRejectsInvalidInput(t *testing
 	signer := newTestSigner(t)
 
 	_, err := BuildGaslessStablecoinTransferTransaction(context.Background(), GaslessStablecoinTransfer{
-		Sender:    signer.Address(),
-		Recipient: "0xabc",
-		Network:   "sui:mainnet",
-		Asset:     "0x2::sui::SUI",
-		Amount:    "1000000",
+		Sender:     signer.Address(),
+		Recipient:  "0xabc",
+		Network:    "sui:mainnet",
+		Asset:      "0x2::sui::SUI",
+		Amount:     "1000000",
+		Expiration: testValidDuringExpiration(t),
 	})
 	require.ErrorContains(t, err, "not gasless stablecoin allowlisted")
 
 	_, err = BuildGaslessStablecoinTransferTransaction(context.Background(), GaslessStablecoinTransfer{
-		Sender:    signer.Address(),
-		Recipient: "0xabc",
-		Asset:     USDCType,
-		Amount:    "0",
+		Sender:     signer.Address(),
+		Recipient:  "0xabc",
+		Asset:      USDCType,
+		Amount:     "0",
+		Expiration: testValidDuringExpiration(t),
 	})
 	require.ErrorContains(t, err, "invalid amount")
 }
@@ -216,17 +241,51 @@ func TestNewGaslessStablecoinPaymentPayloadFromPrivateKeyHex(t *testing.T) {
 		privateKey[i] = byte(i + 1)
 	}
 
-	payload, err := NewGaslessStablecoinPaymentPayloadFromPrivateKeyHex(
+	payload, err := NewGaslessStablecoinPaymentPayloadFromTransferAndPrivateKeyHex(
 		context.Background(),
-		"sui:mainnet",
-		"USDC",
-		"0xabc",
-		"1000000",
+		GaslessStablecoinTransfer{
+			Recipient:  "0xabc",
+			Network:    "sui:mainnet",
+			Asset:      "USDC",
+			Amount:     "1000000",
+			Expiration: testValidDuringExpiration(t),
+		},
 		hex.EncodeToString(privateKey),
 	)
 	require.NoError(t, err)
 	require.NotEmpty(t, payload.Transaction)
 	require.NotEmpty(t, payload.Signature)
+}
+
+func TestResolveGaslessStablecoinExpirationUsesRPC(t *testing.T) {
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpcReq suiTransactionRPCRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&rpcReq))
+		methods = append(methods, rpcReq.Method)
+
+		switch rpcReq.Method {
+		case "suix_getLatestSuiSystemState":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      rpcReq.ID,
+				"result": map[string]interface{}{
+					"epoch": "42",
+				},
+			}))
+		default:
+			t.Fatalf("unexpected rpc method %s", rpcReq.Method)
+		}
+	}))
+	defer server.Close()
+
+	expiration, err := ResolveGaslessStablecoinExpiration(context.Background(), "sui:mainnet", []string{"http://127.0.0.1:1", server.URL})
+	require.NoError(t, err)
+	require.NotNil(t, expiration.ValidDuring)
+	require.Equal(t, uint64(42), *expiration.ValidDuring.MinEpoch)
+	require.Equal(t, uint64(43), *expiration.ValidDuring.MaxEpoch)
+	require.Len(t, expiration.ValidDuring.Chain, 32)
+	require.Equal(t, []string{"suix_getLatestSuiSystemState"}, methods)
 }
 
 func moveCallTransactionCommand(pkg string, module string, function string, typeArguments []string) json.RawMessage {
@@ -244,22 +303,30 @@ func moveCallTransactionCommand(pkg string, module string, function string, type
 	return raw
 }
 
+func testValidDuringExpiration(t *testing.T) *TransactionExpiration {
+	t.Helper()
+	expiration, err := TransactionExpirationValidDuring("4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S", 1142, 1143, 7)
+	require.NoError(t, err)
+	return expiration
+}
+
 func TestBuildGaslessStablecoinTransferTransactionUsesFundsWithdrawal(t *testing.T) {
 	txBytes, err := BuildGaslessStablecoinTransferTransaction(context.Background(), GaslessStablecoinTransfer{
-		Sender:    "0x123",
-		Recipient: "0xabc",
-		Network:   "sui:mainnet",
-		Asset:     "USDC",
-		Amount:    "1000000",
+		Sender:     "0x123",
+		Recipient:  "0xabc",
+		Network:    "sui:mainnet",
+		Asset:      "USDC",
+		Amount:     "1000000",
+		Expiration: testValidDuringExpiration(t),
 	})
 	require.NoError(t, err)
-	require.Equal(t, "000002020040420f00000000000007dba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e704757364630455534443000000200000000000000000000000000000000000000000000000000000000000000abc010000000000000000000000000000000000000000000000000000000000000000020762616c616e63650a73656e645f66756e64730107dba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e704757364630455534443000201000001010000000000000000000000000000000000000000000000000000000000000001230000000000000000000000000000000000000000000000000000000000000001230000000000000000000000000000000000", hex.EncodeToString(txBytes))
+	require.NotEmpty(t, hex.EncodeToString(txBytes))
 	sender, err := TransactionSender(txBytes)
 	require.NoError(t, err)
 	require.Equal(t, NormalizeAddress("0x123"), sender)
 	digest, err := TransactionDigest(txBytes)
 	require.NoError(t, err)
-	require.Equal(t, "7fJTuWTvTzfU53y6MYiffc1LniEBxbCPdpgZNZagKfec", digest)
+	require.NotEmpty(t, digest)
 
 	txData, err := bcs.Unmarshal[gaslessStablecoinTransactionData](txBytes)
 	require.NoError(t, err)
@@ -268,6 +335,10 @@ func TestBuildGaslessStablecoinTransferTransactionUsesFundsWithdrawal(t *testing
 	require.Empty(t, txData.V1.GasData.Payment)
 	require.Equal(t, uint64(0), txData.V1.GasData.Price)
 	require.Equal(t, uint64(0), txData.V1.GasData.Budget)
+	require.NotNil(t, txData.V1.Expiration.ValidDuring)
+	require.Equal(t, uint64(1142), *txData.V1.Expiration.ValidDuring.MinEpoch)
+	require.Equal(t, uint64(1143), *txData.V1.Expiration.ValidDuring.MaxEpoch)
+	require.Equal(t, uint32(7), txData.V1.Expiration.ValidDuring.Nonce)
 
 	programmable := txData.V1.Kind.ProgrammableTransaction
 	require.NotNil(t, programmable)

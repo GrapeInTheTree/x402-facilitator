@@ -3,6 +3,7 @@ package facilitator
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,8 +120,11 @@ func (t *SuiFacilitator) Verify(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 
-	parsed, err := parseAndVerifySuiPayload(payload.Payload)
+	parsed, err := t.parseAndVerifySuiPayload(ctx, payload.Payload)
 	if err != nil {
+		if errors.Is(err, suischeme.ErrSignatureVerificationUnavailable) {
+			return nil, err
+		}
 		return &types.PaymentVerifyResponse{
 			IsValid:        false,
 			InvalidReason:  invalidPayloadReason(err),
@@ -214,7 +218,7 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 
-	parsed, err := parseAndVerifySuiPayload(payload.Payload)
+	suiPayload, payloadDigest, err := parseSuiPayloadForSettlement(payload.Payload)
 	if err != nil {
 		return &types.PaymentSettleResponse{
 			Success:      false,
@@ -225,9 +229,9 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 		}, nil
 	}
 
-	executed, err := t.client.executeTransactionBlock(ctx, parsed.Payload.Transaction, []string{parsed.Payload.Signature})
+	executed, err := t.client.executeTransactionBlock(ctx, suiPayload.Transaction, []string{suiPayload.Signature})
 	if err != nil {
-		if settled, lookupErr := t.settledTransactionResponse(ctx, parsed.TransactionDigest, req, verified.Payer, network); lookupErr == nil && settled != nil {
+		if settled, lookupErr := t.settledTransactionResponse(ctx, payloadDigest, req, verified.Payer, network); lookupErr == nil && settled != nil {
 			return settled, nil
 		}
 		return &types.PaymentSettleResponse{
@@ -240,7 +244,7 @@ func (t *SuiFacilitator) Settle(ctx context.Context, payload *types.PaymentPaylo
 	}
 	transactionDigest := executed.Digest.String()
 	if transactionDigest == "" {
-		transactionDigest = parsed.TransactionDigest
+		transactionDigest = payloadDigest
 	}
 	if !executed.IsSuccess() {
 		return &types.PaymentSettleResponse{
@@ -383,7 +387,7 @@ type verifiedSuiPayload struct {
 	TransactionDigest string
 }
 
-func parseAndVerifySuiPayload(payload map[string]interface{}) (*verifiedSuiPayload, error) {
+func (t *SuiFacilitator) parseAndVerifySuiPayload(ctx context.Context, payload map[string]interface{}) (*verifiedSuiPayload, error) {
 	suiPayload, err := suischeme.PayloadFromMap(payload)
 	if err != nil {
 		return nil, err
@@ -393,7 +397,9 @@ func parseAndVerifySuiPayload(payload map[string]interface{}) (*verifiedSuiPaylo
 	if err != nil {
 		return nil, err
 	}
-	payer, err := suischeme.VerifySignature(suiPayload.Signature, txBytes)
+	payer, err := suischeme.VerifySignatureWithOptions(ctx, suiPayload.Signature, txBytes, suischeme.SignatureVerifyOptions{
+		ZkLoginVerifier: t.client.verifyZkLoginSignature,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -412,6 +418,22 @@ func parseAndVerifySuiPayload(payload map[string]interface{}) (*verifiedSuiPaylo
 		Sender:            sender,
 		TransactionDigest: digest,
 	}, nil
+}
+
+func parseSuiPayloadForSettlement(payload map[string]interface{}) (*suischeme.Payload, string, error) {
+	suiPayload, err := suischeme.PayloadFromMap(payload)
+	if err != nil {
+		return nil, "", err
+	}
+	txBytes, err := suiPayload.DecodeTransaction()
+	if err != nil {
+		return nil, "", err
+	}
+	digest, err := suischeme.TransactionDigest(txBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	return suiPayload, digest, nil
 }
 
 func invalidPayloadReason(err error) string {
@@ -479,6 +501,21 @@ func (c *suiRPCClient) getTransactionBlock(ctx context.Context, digest string) (
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (c *suiRPCClient) verifyZkLoginSignature(ctx context.Context, author string, txBytes []byte, signature string) (bool, error) {
+	params := []interface{}{
+		base64.StdEncoding.EncodeToString(txBytes),
+		signature,
+		"TransactionData",
+		author,
+	}
+
+	var result suiZkLoginVerifyResult
+	if err := c.call(ctx, "sui_verifyZkLoginSignature", params, &result); err != nil {
+		return false, err
+	}
+	return result.Success && len(result.Errors) == 0, nil
 }
 
 func (c *suiRPCClient) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
@@ -563,6 +600,11 @@ type suiRPCResponse struct {
 	ID      int             `json:"id"`
 	Result  json.RawMessage `json:"result"`
 	Error   *suiRPCError    `json:"error,omitempty"`
+}
+
+type suiZkLoginVerifyResult struct {
+	Success bool     `json:"success"`
+	Errors  []string `json:"errors,omitempty"`
 }
 
 type suiRPCError struct {

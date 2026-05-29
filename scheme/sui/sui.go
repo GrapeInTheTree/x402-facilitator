@@ -1,24 +1,15 @@
 package sui
 
 import (
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
-
-	suiintent "github.com/open-move/sui-go-sdk/cryptography/intent"
-	suitxcrypto "github.com/open-move/sui-go-sdk/cryptography/transaction"
-	"github.com/open-move/sui-go-sdk/keychain"
-	suiutils "github.com/open-move/sui-go-sdk/utils"
 )
 
 const (
-	// Ed25519 signature scheme flag used by Sui's serialized signature format.
-	SignatureSchemeEd25519 byte = 0x00
-
 	// USDCType is the canonical native USDC type currently supported by Sui's
 	// gasless stablecoin transfer flow.
 	USDCType    = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
@@ -33,9 +24,7 @@ const (
 var (
 	ErrEmptyTransaction = errors.New("empty_transaction")
 
-	ErrEmptySignature       = errors.New("empty_signature")
-	ErrInvalidSignature     = errors.New("invalid_signature")
-	ErrUnsupportedSignature = errors.New("unsupported_signature_scheme")
+	ErrEmptySignature = errors.New("empty_signature")
 
 	// DefaultGaslessStablecoinTypeList mirrors the Sui gasless stablecoin
 	// allowlist from the public docs. The protocol configuration can change, so
@@ -58,18 +47,6 @@ var (
 type Payload struct {
 	Signature   string `json:"signature"`
 	Transaction string `json:"transaction"`
-}
-
-// Signer can sign Sui TransactionData bytes and expose the corresponding Sui
-// address.
-type Signer interface {
-	SignTransaction(txBytes []byte) (string, error)
-	Address() string
-}
-
-type Ed25519Signer struct {
-	privateKey ed25519.PrivateKey
-	publicKey  ed25519.PublicKey
 }
 
 func NewPayload(signature string, txBytes []byte) (*Payload, error) {
@@ -134,121 +111,29 @@ func (p *Payload) DecodeTransaction() ([]byte, error) {
 	return txBytes, nil
 }
 
-func NewEd25519SignerFromPrivateKey(privateKey []byte) (*Ed25519Signer, error) {
-	var key ed25519.PrivateKey
-	switch len(privateKey) {
-	case ed25519.SeedSize:
-		key = ed25519.NewKeyFromSeed(privateKey)
-	case ed25519.PrivateKeySize:
-		key = append(ed25519.PrivateKey(nil), privateKey...)
-	default:
-		return nil, fmt.Errorf("invalid_ed25519_private_key_length: %d", len(privateKey))
-	}
-
-	publicKey, ok := key.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("invalid_ed25519_public_key")
-	}
-
-	return &Ed25519Signer{
-		privateKey: key,
-		publicKey:  append(ed25519.PublicKey(nil), publicKey...),
-	}, nil
-}
-
-func NewEd25519SignerFromHex(privateKeyHex string) (*Ed25519Signer, error) {
-	privateKeyHex = strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x")
-	privateKey, err := hex.DecodeString(privateKeyHex)
-	if err != nil {
-		return nil, err
-	}
-	return NewEd25519SignerFromPrivateKey(privateKey)
-}
-
-func (s *Ed25519Signer) SignTransaction(txBytes []byte) (string, error) {
-	if s == nil {
-		return "", errors.New("nil_signer")
-	}
-	if len(txBytes) == 0 {
-		return "", ErrEmptyTransaction
-	}
-
-	serialized, err := suitxcrypto.Sign(keychain.SchemeEd25519, txBytes, s.publicKey, func(digest []byte) ([]byte, error) {
-		return ed25519.Sign(s.privateKey, digest), nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(serialized), nil
-}
-
-func (s *Ed25519Signer) Address() string {
-	if s == nil {
-		return ""
-	}
-	return AddressFromPublicKey(SignatureSchemeEd25519, s.publicKey)
-}
-
-func VerifySignature(signature string, txBytes []byte) (string, error) {
-	signature = strings.TrimSpace(signature)
-	if signature == "" {
-		return "", ErrEmptySignature
-	}
-	if len(txBytes) == 0 {
-		return "", ErrEmptyTransaction
-	}
-
-	serialized, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidSignature, err)
-	}
-	if len(serialized) != 1+ed25519.SignatureSize+ed25519.PublicKeySize {
-		return "", fmt.Errorf("%w: invalid_length", ErrInvalidSignature)
-	}
-	if serialized[0] != SignatureSchemeEd25519 {
-		return "", ErrUnsupportedSignature
-	}
-
-	rawSig := serialized[1 : 1+ed25519.SignatureSize]
-	publicKey := serialized[1+ed25519.SignatureSize:]
-	if !ed25519.Verify(ed25519.PublicKey(publicKey), TransactionIntentDigest(txBytes), rawSig) {
-		return "", ErrInvalidSignature
-	}
-
-	return AddressFromPublicKey(serialized[0], publicKey), nil
-}
-
-func TransactionIntentDigest(txBytes []byte) []byte {
-	digest, err := suiintent.HashIntentBytes(suiintent.IntentScopeTransactionData, txBytes)
-	if err != nil {
-		panic(err)
-	}
-	return digest[:]
-}
-
-func AddressFromPublicKey(signatureScheme byte, publicKey []byte) string {
-	scheme, err := keychain.SchemeFromFlag(signatureScheme)
-	if err != nil {
-		return ""
-	}
-	address, err := keychain.AddressFromPublicKey(scheme, publicKey)
-	if err != nil {
-		return ""
-	}
-	return address
-}
-
 func NormalizeType(asset string) string {
 	return strings.ToLower(strings.TrimSpace(asset))
 }
 
 func NormalizeAddress(address string) string {
-	normalized, err := suiutils.NormalizeAddress(address)
-	if err != nil {
+	address = strings.ToLower(strings.TrimSpace(address))
+	if address == "" || address == "0x" {
 		return ""
 	}
-	return normalized
+	address = strings.TrimPrefix(address, "0x")
+	if address == "" || len(address) > 64 {
+		return ""
+	}
+	if len(address)%2 != 0 {
+		address = "0" + address
+	}
+	if _, err := hex.DecodeString(address); err != nil {
+		return ""
+	}
+	if len(address) < 64 {
+		address = strings.Repeat("0", 64-len(address)) + address
+	}
+	return "0x" + address
 }
 
 func IsDefaultGaslessStablecoinType(asset string) bool {

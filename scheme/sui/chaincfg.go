@@ -9,6 +9,7 @@ type NetworkInfo struct {
 	Network            string
 	NetworkName        string
 	NetworkID          string
+	ChainDigest        string
 	DefaultURLs        []string
 	StablecoinTypes    map[string]string
 	StablecoinDecimals map[string]uint8
@@ -125,6 +126,7 @@ var networkInfo = map[string]NetworkInfo{
 		Network:            "sui:mainnet",
 		NetworkName:        "Sui Mainnet",
 		NetworkID:          "mainnet",
+		ChainDigest:        "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
 		DefaultURLs:        []string{"https://sui-rpc.publicnode.com", "https://fullnode.mainnet.sui.io:443"},
 		StablecoinTypes:    defaultStablecoinTypesBySymbol(),
 		StablecoinDecimals: defaultStablecoinDecimalsBySymbol(),
@@ -133,6 +135,7 @@ var networkInfo = map[string]NetworkInfo{
 		Network:            "sui:testnet",
 		NetworkName:        "Sui Testnet",
 		NetworkID:          "testnet",
+		ChainDigest:        "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD",
 		DefaultURLs:        []string{"https://sui-testnet-rpc.publicnode.com", "https://fullnode.testnet.sui.io:443"},
 		StablecoinTypes:    defaultStablecoinTypesBySymbol(),
 		StablecoinDecimals: defaultStablecoinDecimalsBySymbol(),

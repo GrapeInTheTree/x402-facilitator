@@ -1,28 +1,33 @@
 package sui
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/btcsuite/btcutil/base58"
+	"github.com/gosuda/x402-facilitator/utils"
 	bcs "github.com/iotaledger/bcs-go"
-	suigraphql "github.com/open-move/sui-go-sdk/graphql"
-	suitx "github.com/open-move/sui-go-sdk/transaction"
-	suitypes "github.com/open-move/sui-go-sdk/types"
-	suitypetag "github.com/open-move/sui-go-sdk/typetag"
-	suiutils "github.com/open-move/sui-go-sdk/utils"
 	"golang.org/x/crypto/blake2b"
 )
 
 const (
 	TransactionKindProgrammable = "ProgrammableTransaction"
 
-	transactionDataDigestTag         = "TransactionData::"
-	gaslessStablecoinSendFundsTarget = "0x2::balance::send_funds"
+	transactionDataDigestTag = "TransactionData::"
+	addressLength            = 32
+	digestLength             = 32
 
 	CommandKindMoveCall        = "MoveCall"
 	CommandKindTransferObjects = "TransferObjects"
@@ -33,17 +38,234 @@ const (
 	CommandKindUpgrade         = "Upgrade"
 )
 
-type TransactionBlockData = suigraphql.TransactionDataContent
-type TransactionEffects = suigraphql.TransactionEffectsResult
-type TransactionExecutionStatus = suigraphql.StatusResult
-type BalanceChange = suigraphql.BalanceChangeResult
-type ObjectChange = suigraphql.ObjectChangeResult
-type ObjectOwnerResult = suigraphql.ObjectOwnerResult
-type ObjectRefResult = suigraphql.ObjectRefResult
-type GasData = suigraphql.GasData
-type TransactionKind = suigraphql.TransactionKindContent
-type MoveCallCommand = suitx.MoveCall
-type ExecuteTransactionBlock = suigraphql.TransactionResult
+func init() {
+	bcs.AddCustomEncoder(func(e *bcs.Encoder, d Digest) error {
+		if len(d) != digestLength {
+			return fmt.Errorf("digest must be %d bytes, got %d", digestLength, len(d))
+		}
+		e.WriteLen(len(d))
+		_, err := e.Write(d)
+		return err
+	})
+	bcs.AddCustomDecoder(func(d *bcs.Decoder, digest *Digest) error {
+		length := d.ReadLen()
+		if err := d.Err(); err != nil {
+			return err
+		}
+		if length != digestLength {
+			return fmt.Errorf("digest must be %d bytes, got %d", digestLength, length)
+		}
+		raw, err := d.ReadN(length)
+		if err != nil {
+			return err
+		}
+		*digest = append((*digest)[:0], raw...)
+		return nil
+	})
+}
+
+type Address [addressLength]byte
+
+func ParseAddress(value string) (Address, error) {
+	normalized := NormalizeAddress(value)
+	if normalized == "" {
+		return Address{}, fmt.Errorf("invalid Sui address: %s", value)
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(normalized, "0x"))
+	if err != nil {
+		return Address{}, err
+	}
+	if len(decoded) != addressLength {
+		return Address{}, fmt.Errorf("invalid Sui address length: %d", len(decoded))
+	}
+	var address Address
+	copy(address[:], decoded)
+	return address, nil
+}
+
+func (a Address) String() string {
+	return "0x" + hex.EncodeToString(a[:])
+}
+
+func (a Address) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.String())
+}
+
+func (a *Address) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*a = Address{}
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	address, err := ParseAddress(value)
+	if err != nil {
+		return err
+	}
+	*a = address
+	return nil
+}
+
+type Digest []byte
+
+func ParseDigest(value string) (Digest, error) {
+	return parseDigest(value)
+}
+
+func (d Digest) String() string {
+	return base58.Encode(d)
+}
+
+func (d Digest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.String())
+}
+
+func (d *Digest) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*d = nil
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	digest, err := parseDigest(value)
+	if err != nil {
+		return err
+	}
+	*d = digest
+	return nil
+}
+
+type ObjectRef struct {
+	ObjectID Address `json:"objectId"`
+	Version  uint64  `json:"version"`
+	Digest   Digest  `json:"digest"`
+}
+
+type SharedObjectRef struct {
+	ObjectID             Address `json:"objectId"`
+	InitialSharedVersion uint64  `json:"initialSharedVersion"`
+	Mutable              bool    `json:"mutable"`
+}
+
+type TransactionBlockData struct {
+	MessageVersion string           `json:"messageVersion,omitempty"`
+	Transaction    *TransactionKind `json:"transaction,omitempty"`
+	Sender         *Address         `json:"sender,omitempty"`
+	GasData        *GasData         `json:"gasData,omitempty"`
+	Expiration     json.RawMessage  `json:"expiration,omitempty"`
+}
+
+type TransactionEffects struct {
+	MessageVersion     string                      `json:"messageVersion,omitempty"`
+	Status             *TransactionExecutionStatus `json:"status,omitempty"`
+	ExecutedEpoch      string                      `json:"executedEpoch,omitempty"`
+	GasUsed            *GasUsedResult              `json:"gasUsed,omitempty"`
+	ModifiedAtVersions []ModifiedAtVersion         `json:"modifiedAtVersions,omitempty"`
+	TransactionDigest  Digest                      `json:"transactionDigest,omitempty"`
+	Created            []ObjectOwnerResult         `json:"created,omitempty"`
+	Mutated            []ObjectOwnerResult         `json:"mutated,omitempty"`
+	Deleted            []ObjectRefResult           `json:"deleted,omitempty"`
+	Unwrapped          []ObjectOwnerResult         `json:"unwrapped,omitempty"`
+	Wrapped            []ObjectRefResult           `json:"wrapped,omitempty"`
+	GasObject          *ObjectOwnerResult          `json:"gasObject,omitempty"`
+	Dependencies       []Digest                    `json:"dependencies,omitempty"`
+}
+
+type TransactionExecutionStatus struct {
+	Status string  `json:"status"`
+	Error  *string `json:"error,omitempty"`
+}
+
+type GasUsedResult struct {
+	ComputationCost         string `json:"computationCost"`
+	StorageCost             string `json:"storageCost"`
+	StorageRebate           string `json:"storageRebate"`
+	NonRefundableStorageFee string `json:"nonRefundableStorageFee"`
+}
+
+type ModifiedAtVersion struct {
+	ObjectID       Address `json:"objectId"`
+	SequenceNumber string  `json:"sequenceNumber"`
+}
+
+type BalanceChange struct {
+	Owner    interface{} `json:"owner"`
+	CoinType string      `json:"coinType"`
+	Amount   string      `json:"amount"`
+}
+
+type ObjectChange struct {
+	Type            string      `json:"type"`
+	Sender          *Address    `json:"sender,omitempty"`
+	Owner           interface{} `json:"owner,omitempty"`
+	ObjectType      string      `json:"objectType,omitempty"`
+	ObjectID        *Address    `json:"objectId,omitempty"`
+	Version         string      `json:"version,omitempty"`
+	PreviousVersion string      `json:"previousVersion,omitempty"`
+	Digest          *Digest     `json:"digest,omitempty"`
+	PackageID       *Address    `json:"packageId,omitempty"`
+	Modules         []string    `json:"modules,omitempty"`
+}
+
+type ObjectOwnerResult struct {
+	Owner     interface{}      `json:"owner"`
+	Reference *ObjectRefResult `json:"reference,omitempty"`
+}
+
+type ObjectRefResult struct {
+	ObjectID Address `json:"objectId"`
+	Version  string  `json:"version"`
+	Digest   Digest  `json:"digest"`
+}
+
+type GasData struct {
+	Payment []ObjectRefResult `json:"payment,omitempty"`
+	Owner   *Address          `json:"owner,omitempty"`
+	Price   string            `json:"price,omitempty"`
+	Budget  string            `json:"budget,omitempty"`
+}
+
+type TransactionKind struct {
+	Kind         string            `json:"kind,omitempty"`
+	Inputs       []json.RawMessage `json:"inputs,omitempty"`
+	Transactions []json.RawMessage `json:"transactions,omitempty"`
+	Commands     []json.RawMessage `json:"commands,omitempty"`
+}
+
+type ExecuteTransactionBlock struct {
+	Digest                  Digest              `json:"digest"`
+	Effects                 *TransactionEffects `json:"effects,omitempty"`
+	ObjectChanges           []ObjectChange      `json:"objectChanges,omitempty"`
+	BalanceChanges          []BalanceChange     `json:"balanceChanges,omitempty"`
+	TimestampMs             *string             `json:"timestampMs,omitempty"`
+	ConfirmedLocalExecution bool                `json:"confirmedLocalExecution,omitempty"`
+	Checkpoint              *string             `json:"checkpoint,omitempty"`
+	Errors                  []string            `json:"errors,omitempty"`
+}
+
+func (r *ExecuteTransactionBlock) IsSuccess() bool {
+	return r != nil && transactionEffectsSuccess(r.Effects)
+}
+
+func (r *ExecuteTransactionBlock) GetError() *string {
+	if r == nil || r.Effects == nil || r.Effects.Status == nil {
+		return nil
+	}
+	return r.Effects.Status.Error
+}
+
+type MoveCallCommand struct {
+	Target        string            `json:"target,omitempty"`
+	Package       string            `json:"package,omitempty"`
+	Module        string            `json:"module,omitempty"`
+	Function      string            `json:"function,omitempty"`
+	TypeArguments []string          `json:"type_arguments,omitempty"`
+	Arguments     []json.RawMessage `json:"arguments,omitempty"`
+}
 
 type GaslessStablecoinTransfer struct {
 	Sender    string
@@ -51,6 +273,29 @@ type GaslessStablecoinTransfer struct {
 	Network   string
 	Asset     string
 	Amount    string
+	Endpoints []string
+
+	// Expiration can be provided to build fully offline. If nil, the builder
+	// resolves a ValidDuring expiration from the network using Endpoints plus
+	// configured default endpoints.
+	Expiration *TransactionExpiration
+}
+
+type TransactionExpiration struct {
+	None        *struct{}
+	Epoch       *uint64
+	ValidDuring *ValidDuring
+}
+
+func (TransactionExpiration) IsBcsEnum() {}
+
+type ValidDuring struct {
+	MinEpoch     *uint64 `bcs:"optional"`
+	MaxEpoch     *uint64 `bcs:"optional"`
+	MinTimestamp *uint64 `bcs:"optional"`
+	MaxTimestamp *uint64 `bcs:"optional"`
+	Chain        Digest
+	Nonce        uint32
 }
 
 func ParseTransactionBlockData(data []byte) (*TransactionBlockData, error) {
@@ -170,7 +415,7 @@ func TransactionDigest(txBytes []byte) (string, error) {
 	tagged = append(tagged, transactionDataDigestTag...)
 	tagged = append(tagged, txBytes...)
 	digest := blake2b.Sum256(tagged)
-	return suitypes.Digest(digest[:]).String(), nil
+	return Digest(digest[:]).String(), nil
 }
 
 func ParseExecuteTransactionBlock(data []byte) (*ExecuteTransactionBlock, error) {
@@ -221,6 +466,29 @@ func MinimumGaslessStablecoinAmount(decimals uint8) *big.Int {
 		return big.NewInt(1)
 	}
 	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)-2), nil)
+}
+
+func TransactionExpirationNone() *TransactionExpiration {
+	return &TransactionExpiration{None: &struct{}{}}
+}
+
+func TransactionExpirationEpoch(epoch uint64) *TransactionExpiration {
+	return &TransactionExpiration{Epoch: &epoch}
+}
+
+func TransactionExpirationValidDuring(chainDigest string, minEpoch uint64, maxEpoch uint64, nonce uint32) (*TransactionExpiration, error) {
+	chain, err := parseDigest(chainDigest)
+	if err != nil {
+		return nil, err
+	}
+	return &TransactionExpiration{
+		ValidDuring: &ValidDuring{
+			MinEpoch: &minEpoch,
+			MaxEpoch: &maxEpoch,
+			Chain:    chain,
+			Nonce:    nonce,
+		},
+	}, nil
 }
 
 func transactionEffectsSuccess(e *TransactionEffects) bool {
@@ -330,19 +598,23 @@ func BuildGaslessStablecoinTransferTransaction(ctx context.Context, transfer Gas
 		return nil, fmt.Errorf("invalid amount: %s", transfer.Amount)
 	}
 
-	senderAddress, err := suiutils.ParseAddress(sender)
+	senderAddress, err := ParseAddress(sender)
 	if err != nil {
 		return nil, err
 	}
-	recipientAddress, err := suiutils.ParseAddress(recipient)
+	recipientAddress, err := ParseAddress(recipient)
 	if err != nil {
 		return nil, err
 	}
-	packageAddress, err := suiutils.ParseAddress("0x2")
+	packageAddress, err := ParseAddress("0x2")
 	if err != nil {
 		return nil, err
 	}
-	coinTypeTag, err := suiutils.ParseTypeTag(coinType)
+	coinTypeTag, err := ParseTypeTag(coinType)
+	if err != nil {
+		return nil, err
+	}
+	expiration, err := gaslessStablecoinTransferExpiration(ctx, transfer)
 	if err != nil {
 		return nil, err
 	}
@@ -372,19 +644,19 @@ func BuildGaslessStablecoinTransferTransaction(ctx context.Context, transfer Gas
 							},
 						},
 						{
-							Pure: &suitx.Pure{
+							Pure: &Pure{
 								Bytes: recipientBytes,
 							},
 						},
 					},
-					Commands: []suitx.Command{
+					Commands: []Command{
 						{
-							MoveCall: &suitx.ProgrammableMoveCall{
+							MoveCall: &ProgrammableMoveCall{
 								Package:       packageAddress,
 								Module:        "balance",
 								Function:      "send_funds",
-								TypeArguments: []suitypetag.TypeTag{coinTypeTag},
-								Arguments: []suitx.Argument{
+								TypeArguments: []TypeTag{coinTypeTag},
+								Arguments: []Argument{
 									{Input: &balanceInput},
 									{Input: &recipientInput},
 								},
@@ -394,13 +666,13 @@ func BuildGaslessStablecoinTransferTransaction(ctx context.Context, transfer Gas
 				},
 			},
 			Sender: senderAddress,
-			GasData: suitx.GasData{
-				Payment: []suitypes.ObjectRef{},
+			GasData: gaslessStablecoinGasData{
+				Payment: []ObjectRef{},
 				Owner:   senderAddress,
 				Price:   0,
 				Budget:  0,
 			},
-			Expiration: suitx.ExpirationNone(),
+			Expiration: expiration,
 		},
 	}
 
@@ -411,6 +683,521 @@ func BuildGaslessStablecoinTransferTransaction(ctx context.Context, transfer Gas
 	return txBytes, nil
 }
 
+func gaslessStablecoinTransferExpiration(ctx context.Context, transfer GaslessStablecoinTransfer) (TransactionExpiration, error) {
+	if transfer.Expiration != nil {
+		return *transfer.Expiration, nil
+	}
+	expiration, err := ResolveGaslessStablecoinExpiration(ctx, transfer.Network, transfer.Endpoints)
+	if err != nil {
+		return TransactionExpiration{}, err
+	}
+	return *expiration, nil
+}
+
+func ResolveGaslessStablecoinExpiration(ctx context.Context, network string, endpoints []string) (*TransactionExpiration, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	info := GetNetworkInfo(network)
+	if info == nil {
+		return nil, fmt.Errorf("unsupported Sui network %q", network)
+	}
+
+	endpointInput := make([]string, 0, len(endpoints)+len(info.DefaultURLs))
+	endpointInput = append(endpointInput, endpoints...)
+	endpointInput = append(endpointInput, info.DefaultURLs...)
+	candidates := utils.EndpointCandidates(endpointInput)
+	var expiration *TransactionExpiration
+	_, err := utils.DoWithEndpoint(ctx, candidates, func(ctx context.Context, endpoint string) error {
+		resolved, err := resolveGaslessStablecoinExpirationFromEndpoint(ctx, endpoint, info.ChainDigest)
+		if err != nil {
+			return err
+		}
+		expiration = resolved
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve gasless stablecoin expiration: %w", err)
+	}
+	if expiration == nil {
+		return nil, errors.New("failed to resolve gasless stablecoin expiration")
+	}
+	return expiration, nil
+}
+
+func resolveGaslessStablecoinExpirationFromEndpoint(ctx context.Context, endpoint string, chainDigest string) (*TransactionExpiration, error) {
+	client := suiTransactionRPCClient{
+		endpoint: endpoint,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	var state struct {
+		Epoch string `json:"epoch"`
+	}
+	if err := client.call(ctx, "suix_getLatestSuiSystemState", []interface{}{}, &state); err != nil {
+		return nil, err
+	}
+
+	epoch, err := strconv.ParseUint(strings.TrimSpace(state.Epoch), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Sui epoch %q: %w", state.Epoch, err)
+	}
+	if epoch == ^uint64(0) {
+		return nil, errors.New("Sui epoch is too large")
+	}
+
+	if strings.TrimSpace(chainDigest) == "" {
+		var checkpoint struct {
+			Digest string `json:"digest"`
+		}
+		if err := client.call(ctx, "sui_getCheckpoint", []interface{}{"0"}, &checkpoint); err != nil {
+			return nil, err
+		}
+		chainDigest = checkpoint.Digest
+	}
+
+	nonce, err := randomUint32()
+	if err != nil {
+		return nil, err
+	}
+	return TransactionExpirationValidDuring(chainDigest, epoch, epoch+1, nonce)
+}
+
+func randomUint32() (uint32, error) {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint32(buf[:]), nil
+}
+
+func parseDigest(value string) (Digest, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, errors.New("empty digest")
+	}
+
+	decoded := base58.Decode(value)
+	if len(decoded) == digestLength {
+		return Digest(decoded), nil
+	}
+
+	hexValue := strings.TrimPrefix(strings.ToLower(value), "0x")
+	if len(hexValue) == digestLength*2 {
+		decoded, err := hex.DecodeString(hexValue)
+		if err != nil {
+			return nil, err
+		}
+		if len(decoded) == digestLength {
+			return Digest(decoded), nil
+		}
+	}
+
+	return nil, fmt.Errorf("digest must be a 32-byte base58 or hex value: %s", value)
+}
+
+type suiTransactionRPCClient struct {
+	endpoint   string
+	httpClient *http.Client
+}
+
+func (c suiTransactionRPCClient) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
+	reqBody := suiTransactionRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  method,
+		Params:  params,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("sui rpc http status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var rpcResp suiTransactionRPCResponse
+	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+		return err
+	}
+	if rpcResp.Error != nil {
+		return rpcResp.Error
+	}
+	if len(rpcResp.Result) == 0 {
+		return errors.New("sui rpc missing result")
+	}
+	return json.Unmarshal(rpcResp.Result, result)
+}
+
+type suiTransactionRPCRequest struct {
+	JSONRPC string        `json:"jsonrpc"`
+	ID      int           `json:"id"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params"`
+}
+
+type suiTransactionRPCResponse struct {
+	JSONRPC string                  `json:"jsonrpc"`
+	ID      int                     `json:"id"`
+	Result  json.RawMessage         `json:"result"`
+	Error   *suiTransactionRPCError `json:"error,omitempty"`
+}
+
+type suiTransactionRPCError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (e *suiTransactionRPCError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if len(e.Data) == 0 {
+		return fmt.Sprintf("sui rpc error %d: %s", e.Code, e.Message)
+	}
+	return fmt.Sprintf("sui rpc error %d: %s: %s", e.Code, e.Message, string(e.Data))
+}
+
+type TypeTag struct {
+	Bool    *struct{}
+	U8      *struct{}
+	U64     *struct{}
+	U128    *struct{}
+	Address *struct{}
+	Signer  *struct{}
+	Vector  *TypeTag
+	Struct  *StructTag
+	U16     *struct{}
+	U32     *struct{}
+	U256    *struct{}
+}
+
+func (TypeTag) IsBcsEnum() {}
+
+func ParseTypeTag(value string) (TypeTag, error) {
+	parser := typeTagParser{input: strings.TrimSpace(value)}
+	tag, err := parser.parseType()
+	if err != nil {
+		return TypeTag{}, err
+	}
+	parser.skipSpaces()
+	if !parser.done() {
+		return TypeTag{}, fmt.Errorf("unexpected trailing type tag input at %q", parser.remaining())
+	}
+	return tag, nil
+}
+
+type typeTagParser struct {
+	input string
+	pos   int
+}
+
+func (p *typeTagParser) parseType() (TypeTag, error) {
+	p.skipSpaces()
+	token := p.readToken()
+	if token == "" {
+		return TypeTag{}, errors.New("empty type tag")
+	}
+
+	switch strings.ToLower(token) {
+	case "bool":
+		return TypeTag{Bool: &struct{}{}}, nil
+	case "u8":
+		return TypeTag{U8: &struct{}{}}, nil
+	case "u16":
+		return TypeTag{U16: &struct{}{}}, nil
+	case "u32":
+		return TypeTag{U32: &struct{}{}}, nil
+	case "u64":
+		return TypeTag{U64: &struct{}{}}, nil
+	case "u128":
+		return TypeTag{U128: &struct{}{}}, nil
+	case "u256":
+		return TypeTag{U256: &struct{}{}}, nil
+	case "address":
+		return TypeTag{Address: &struct{}{}}, nil
+	case "signer":
+		return TypeTag{Signer: &struct{}{}}, nil
+	case "vector":
+		inner, err := p.parseTypeArguments()
+		if err != nil {
+			return TypeTag{}, err
+		}
+		if len(inner) != 1 {
+			return TypeTag{}, fmt.Errorf("vector expects one type argument, got %d", len(inner))
+		}
+		return TypeTag{Vector: &inner[0]}, nil
+	}
+
+	parts := strings.Split(token, "::")
+	if len(parts) != 3 {
+		return TypeTag{}, fmt.Errorf("unsupported type tag: %s", token)
+	}
+	address, err := ParseAddress(parts[0])
+	if err != nil {
+		return TypeTag{}, err
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return TypeTag{}, fmt.Errorf("invalid struct type tag: %s", token)
+	}
+
+	var typeParams []TypeTag
+	p.skipSpaces()
+	if p.peek() == '<' {
+		typeParams, err = p.parseTypeArguments()
+		if err != nil {
+			return TypeTag{}, err
+		}
+	}
+
+	return TypeTag{
+		Struct: &StructTag{
+			Address:    address,
+			Module:     parts[1],
+			Name:       parts[2],
+			TypeParams: typeParams,
+		},
+	}, nil
+}
+
+func (p *typeTagParser) parseTypeArguments() ([]TypeTag, error) {
+	p.skipSpaces()
+	if !p.consume('<') {
+		return nil, fmt.Errorf("expected type argument list at %q", p.remaining())
+	}
+
+	var arguments []TypeTag
+	for {
+		p.skipSpaces()
+		if p.peek() == '>' {
+			p.pos++
+			return arguments, nil
+		}
+
+		argument, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		arguments = append(arguments, argument)
+
+		p.skipSpaces()
+		switch p.peek() {
+		case ',':
+			p.pos++
+		case '>':
+			p.pos++
+			return arguments, nil
+		default:
+			return nil, fmt.Errorf("expected ',' or '>' at %q", p.remaining())
+		}
+	}
+}
+
+func (p *typeTagParser) readToken() string {
+	start := p.pos
+	for p.pos < len(p.input) {
+		switch p.input[p.pos] {
+		case '<', '>', ',':
+			return strings.TrimSpace(p.input[start:p.pos])
+		default:
+			p.pos++
+		}
+	}
+	return strings.TrimSpace(p.input[start:p.pos])
+}
+
+func (p *typeTagParser) skipSpaces() {
+	for p.pos < len(p.input) {
+		switch p.input[p.pos] {
+		case ' ', '\t', '\n', '\r':
+			p.pos++
+		default:
+			return
+		}
+	}
+}
+
+func (p *typeTagParser) consume(ch byte) bool {
+	if p.peek() != ch {
+		return false
+	}
+	p.pos++
+	return true
+}
+
+func (p *typeTagParser) peek() byte {
+	if p.done() {
+		return 0
+	}
+	return p.input[p.pos]
+}
+
+func (p *typeTagParser) done() bool {
+	return p.pos >= len(p.input)
+}
+
+func (p *typeTagParser) remaining() string {
+	if p.done() {
+		return ""
+	}
+	return p.input[p.pos:]
+}
+
+func (t TypeTag) String() string {
+	switch {
+	case t.Bool != nil:
+		return "bool"
+	case t.U8 != nil:
+		return "u8"
+	case t.U16 != nil:
+		return "u16"
+	case t.U32 != nil:
+		return "u32"
+	case t.U64 != nil:
+		return "u64"
+	case t.U128 != nil:
+		return "u128"
+	case t.U256 != nil:
+		return "u256"
+	case t.Address != nil:
+		return "address"
+	case t.Signer != nil:
+		return "signer"
+	case t.Vector != nil:
+		return fmt.Sprintf("vector<%s>", t.Vector.String())
+	case t.Struct != nil:
+		return t.Struct.String()
+	default:
+		return ""
+	}
+}
+
+type StructTag struct {
+	Address    Address
+	Module     string
+	Name       string
+	TypeParams []TypeTag
+}
+
+func (s StructTag) String() string {
+	base := fmt.Sprintf("%s::%s::%s", s.Address.String(), s.Module, s.Name)
+	if len(s.TypeParams) == 0 {
+		return base
+	}
+
+	params := make([]string, len(s.TypeParams))
+	for i, param := range s.TypeParams {
+		params[i] = param.String()
+	}
+	return fmt.Sprintf("%s<%s>", base, strings.Join(params, ", "))
+}
+
+type Pure struct {
+	Bytes []byte
+}
+
+type ObjectArg struct {
+	ImmOrOwnedObject *ObjectRef
+	SharedObject     *SharedObjectRef
+	Receiving        *ObjectRef
+}
+
+func (ObjectArg) IsBcsEnum() {}
+
+type Argument struct {
+	GasCoin      *struct{}
+	Input        *uint16
+	Result       *uint16
+	NestedResult *NestedResult
+}
+
+func (Argument) IsBcsEnum() {}
+
+type NestedResult struct {
+	Index       uint16
+	ResultIndex uint16
+}
+
+type ProgrammableMoveCall struct {
+	Package       Address
+	Module        string
+	Function      string
+	TypeArguments []TypeTag
+	Arguments     []Argument
+}
+
+type TransferObjects struct {
+	Objects []Argument
+	Address Argument
+}
+
+type SplitCoins struct {
+	Coin    Argument
+	Amounts []Argument
+}
+
+type MergeCoins struct {
+	Destination Argument
+	Sources     []Argument
+}
+
+type Publish struct {
+	Modules      [][]byte
+	Dependencies []Address
+}
+
+type MakeMoveVec struct {
+	Type     bcs.Option[TypeTag]
+	Elements []Argument
+}
+
+type Upgrade struct {
+	Modules      [][]byte
+	Dependencies []Address
+	Package      Address
+	Ticket       Argument
+}
+
+type Command struct {
+	MoveCall        *ProgrammableMoveCall
+	TransferObjects *TransferObjects
+	SplitCoins      *SplitCoins
+	MergeCoins      *MergeCoins
+	Publish         *Publish
+	MakeMoveVec     *MakeMoveVec
+	Upgrade         *Upgrade
+}
+
+func (Command) IsBcsEnum() {}
+
+type gaslessStablecoinGasData struct {
+	Payment []ObjectRef
+	Owner   Address
+	Price   uint64
+	Budget  uint64
+}
+
 type gaslessStablecoinTransactionData struct {
 	V1 *gaslessStablecoinTransactionDataV1
 }
@@ -419,9 +1206,9 @@ func (gaslessStablecoinTransactionData) IsBcsEnum() {}
 
 type gaslessStablecoinTransactionDataV1 struct {
 	Kind       gaslessStablecoinTransactionKind
-	Sender     suitypes.Address
-	GasData    suitx.GasData
-	Expiration suitx.TransactionExpiration
+	Sender     Address
+	GasData    gaslessStablecoinGasData
+	Expiration TransactionExpiration
 }
 
 type gaslessStablecoinTransactionKind struct {
@@ -435,12 +1222,12 @@ func (gaslessStablecoinTransactionKind) IsBcsEnum() {}
 
 type gaslessStablecoinProgrammableTransaction struct {
 	Inputs   []gaslessStablecoinCallArg
-	Commands []suitx.Command
+	Commands []Command
 }
 
 type gaslessStablecoinCallArg struct {
-	Pure            *suitx.Pure
-	Object          *suitx.ObjectArg
+	Pure            *Pure
+	Object          *ObjectArg
 	FundsWithdrawal *gaslessStablecoinFundsWithdrawal
 }
 
@@ -459,7 +1246,7 @@ type gaslessStablecoinReservation struct {
 func (gaslessStablecoinReservation) IsBcsEnum() {}
 
 type gaslessStablecoinWithdrawalType struct {
-	Balance *suitypetag.TypeTag
+	Balance *TypeTag
 }
 
 func (gaslessStablecoinWithdrawalType) IsBcsEnum() {}
@@ -479,14 +1266,22 @@ func NewGaslessStablecoinPaymentPayloadForNetwork(ctx context.Context, network s
 	if signer == nil {
 		return nil, errors.New("nil signer")
 	}
-
-	txBytes, err := BuildGaslessStablecoinTransferTransaction(ctx, GaslessStablecoinTransfer{
+	return NewGaslessStablecoinPaymentPayloadFromTransfer(ctx, GaslessStablecoinTransfer{
 		Sender:    signer.Address(),
 		Recipient: recipient,
 		Network:   network,
 		Asset:     asset,
 		Amount:    amount,
-	})
+	}, signer)
+}
+
+func NewGaslessStablecoinPaymentPayloadFromTransfer(ctx context.Context, transfer GaslessStablecoinTransfer, signer Signer) (*Payload, error) {
+	if signer == nil {
+		return nil, errors.New("nil signer")
+	}
+	transfer.Sender = signer.Address()
+
+	txBytes, err := BuildGaslessStablecoinTransferTransaction(ctx, transfer)
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +1294,14 @@ func NewGaslessStablecoinPaymentPayloadFromPrivateKeyHex(ctx context.Context, ne
 		return nil, err
 	}
 	return NewGaslessStablecoinPaymentPayloadForNetwork(ctx, network, asset, recipient, amount, signer)
+}
+
+func NewGaslessStablecoinPaymentPayloadFromTransferAndPrivateKeyHex(ctx context.Context, transfer GaslessStablecoinTransfer, privateKeyHex string) (*Payload, error) {
+	signer, err := NewEd25519SignerFromHex(privateKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	return NewGaslessStablecoinPaymentPayloadFromTransfer(ctx, transfer, signer)
 }
 
 func ValidateGaslessStablecoinMoveCall(moveCall MoveCallCommand, asset string) error {
@@ -573,8 +1376,13 @@ func TransactionCommands(transaction *TransactionKind) []TransactionCommand {
 		return nil
 	}
 
-	commands := make([]TransactionCommand, 0, len(transaction.Transactions))
-	for _, raw := range transaction.Transactions {
+	rawCommands := transaction.Transactions
+	if len(rawCommands) == 0 {
+		rawCommands = transaction.Commands
+	}
+
+	commands := make([]TransactionCommand, 0, len(rawCommands))
+	for _, raw := range rawCommands {
 		command, err := ParseTransactionCommand(raw)
 		if err != nil {
 			commands = append(commands, TransactionCommand{
@@ -677,6 +1485,9 @@ func unmarshalMoveCallCommand(data json.RawMessage) (*MoveCallCommand, error) {
 	}
 	if len(moveCall.TypeArguments) == 0 {
 		moveCall.TypeArguments = raw.TypeArgumentsCamel
+	}
+	if len(moveCall.Arguments) == 0 {
+		moveCall.Arguments = raw.Arguments
 	}
 	return &moveCall, nil
 }
